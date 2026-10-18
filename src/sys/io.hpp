@@ -1,6 +1,8 @@
 #ifndef DOAS_SYS_IO_HPP
 #define DOAS_SYS_IO_HPP
 
+#include "sys/error.hpp"
+
 #include <cstdio>
 #include <optional>
 #include <string_view>
@@ -14,7 +16,7 @@ void err_out(std::string_view s);
 
 // Like err_out(), but reports whether the write succeeded; pam.c checks the
 // fprintf(3) return value and aborts the conversation when it fails.
-[[nodiscard]] bool err_out_checked(std::string_view s);
+[[nodiscard]] Status err_out_checked(std::string_view s);
 
 // Flush every stdio stream. Mandatory in the parent right before fork(): a child
 // inherits the stdio buffers and would otherwise duplicate pending output.

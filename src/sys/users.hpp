@@ -1,11 +1,12 @@
 #ifndef DOAS_SYS_USERS_HPP
 #define DOAS_SYS_USERS_HPP
 
+#include "sys/error.hpp"
+
 #include <optional>
 #include <string>
 #include <string_view>
 #include <sys/types.h>
-#include <system_error>
 #include <vector>
 
 namespace sys {
@@ -22,40 +23,26 @@ struct PasswdEntry {
     gid_t gid = 0;
 };
 
-struct PwResult {
-    std::error_code error;
-    std::optional<PasswdEntry> entry;
-};
-
 struct GroupEntry {
     std::string name;
     gid_t gid = 0;
 };
 
-struct GrResult {
-    std::error_code error;
-    std::optional<GroupEntry> entry;
-};
-
-struct ShadowResult {
-    std::error_code error;
-    std::optional<std::string> hash;
-};
-
-struct GroupsResult {
-    std::error_code error;
-    std::vector<gid_t> groups;
-};
-
 // Replacements for mygetpwuid_r()/getpwnam(3)/getgrnam(3)/getspnam(3): the
-// reentrant variants are used with the ERANGE growth loop from doas.c.
-[[nodiscard]] PwResult pw_by_uid(uid_t uid);
-[[nodiscard]] PwResult pw_by_name(std::string_view name);
-[[nodiscard]] GrResult gr_by_name(std::string_view name);
-[[nodiscard]] ShadowResult shadow_hash(std::string_view name);
+// reentrant variants are used with the ERANGE growth loop from doas.c. A missing
+// entry is Err::kNotFound; a failing lookup carries the errno.
+[[nodiscard]] Result<PasswdEntry> pw_by_uid(uid_t uid);
+[[nodiscard]] Result<PasswdEntry> pw_by_name(std::string_view name);
+[[nodiscard]] Result<GroupEntry> gr_by_name(std::string_view name);
+[[nodiscard]] Result<std::string> shadow_hash(std::string_view name);
+
+// crypt(3): returns a copy of the hash, or nothing when libc refuses to hash.
+// The static buffer crypt(3) hands out never escapes this function.
+[[nodiscard]] std::optional<std::string> crypt_hash(std::string_view password,
+                                                    std::string_view setting);
 
 // getgroups(NGROUPS_MAX, ...) with the same buffer size the original used.
-[[nodiscard]] GroupsResult supplementary_groups();
+[[nodiscard]] Result<std::vector<gid_t>> supplementary_groups();
 
 } // namespace sys
 

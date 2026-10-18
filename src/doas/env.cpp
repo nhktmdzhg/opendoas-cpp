@@ -1,11 +1,12 @@
 #include "doas/env.hpp"
 
+#include "sys/process.hpp"
+
 #include <cstring>
 #include <map>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <unistd.h>
 #include <vector>
 
 namespace doas {
@@ -20,15 +21,6 @@ using EnvMap = std::map<std::string, std::string>;
 // addnode(): inserts without overwriting an existing key.
 void add_node(EnvMap& env, const std::string& key, const std::string& value) {
     env.emplace(key, value);
-}
-
-std::optional<std::string> env_lookup(std::string_view name) {
-    const std::string key(name);
-    const char* value = ::getenv(key.c_str());
-    if (value == nullptr) {
-        return std::nullopt;
-    }
-    return std::string(value);
 }
 
 // fillenv(): parses "NAME", "NAME=value", "NAME=$OTHER", "-NAME" and
@@ -65,7 +57,7 @@ void fill_env(EnvMap& env, const Container& list, std::string_view formerpath) {
                 if (ref == "PATH") {
                     val = std::string(formerpath);
                 } else {
-                    val = env_lookup(ref);
+                    val = sys::process::get_env(ref);
                 }
             } else {
                 val = std::string(value);
@@ -74,7 +66,7 @@ void fill_env(EnvMap& env, const Container& list, std::string_view formerpath) {
             if (name == "PATH") {
                 val = std::string(formerpath);
             } else {
-                val = env_lookup(name);
+                val = sys::process::get_env(name);
             }
         }
         // at last, we have something to insert
@@ -95,7 +87,7 @@ EnvMap create_env(const Rule& rule, const sys::PasswdEntry& self, const sys::Pas
     add_node(env, "DOAS_USER", self.name);
     add_node(env, "HOME", target.dir);
     add_node(env, "LOGNAME", target.name);
-    add_node(env, "PATH", env_lookup("PATH").value_or(""));
+    add_node(env, "PATH", sys::process::get_env("PATH").value_or(""));
     add_node(env, "SHELL", target.shell);
     add_node(env, "USER", target.name);
 

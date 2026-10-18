@@ -33,7 +33,6 @@
 #include <array>
 #include <cerrno>
 #include <climits>
-#include <cstdio>
 #include <cstring>
 #include <fcntl.h>
 #include <format>
@@ -42,15 +41,18 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
-#include <vector>
 
 namespace doas {
 
 namespace {
 
 constexpr const char* kTimestampDir = DOAS_PERSIST_DIR;
-constexpr size_t kPathSize = 256;
 constexpr size_t kProcStatSize = 1024;
+
+struct ProcInfo {
+    int tty_nr = 0;
+    unsigned long long start_time = 0;
+};
 
 bool clock_now(clockid_t clock, struct timespec* out) {
     return ::clock_gettime(clock, out) == 0;
@@ -58,32 +60,33 @@ bool clock_now(clockid_t clock, struct timespec* out) {
 
 // proc_info(): reads the tty number and the session leader start time from
 // /proc/<pid>/stat.
-int proc_info(pid_t pid, int* ttynr, unsigned long long* starttime) {
-    std::array<char, 128> path{};
-    std::array<char, kProcStatSize> buf{};
+sys::Result<ProcInfo> proc_info(pid_t pid) {
+    const std::string path = std::format("/proc/{}/stat", pid);
 
-    const int n = std::snprintf(path.data(), path.size(), "/proc/%d/stat", pid);
-    if (n < 0 || n >= static_cast<int>(path.size())) {
-        return -1;
-    }
-
-    auto fd = sys::fs::open_file(path.data(), O_RDONLY | O_NOFOLLOW);
+    auto fd = sys::fs::open_file(path, O_RDONLY | O_NOFOLLOW);
     if (!fd) {
-        sys::warn_errno(std::format("failed to open: {}", path.data()));
-        return -1;
+        sys::warn(fd.error(), std::format("failed to open: {}", path));
+        return std::unexpected(fd.error());
     }
 
+    std::array<char, kProcStatSize> buf{};
     char* const begin = buf.data();
     char* const limit = begin + (buf.size() - 1);
     char* p = begin;
-    ssize_t got = 0;
-    while ((got = ::read(fd->get(), p, static_cast<size_t>(limit - p))) != 0) {
-        if (got == -1) {
-            if (errno == EAGAIN || errno == EINTR) {
+    size_t got = 0;
+    for (;;) {
+        const auto read = sys::fs::read_fd(fd->get(), {p, static_cast<size_t>(limit - p)});
+        if (!read) {
+            if (read.error().code == std::errc::resource_unavailable_try_again ||
+                read.error().code == std::errc::interrupted) {
                 continue;
             }
-            sys::warn_errno(std::format("read: {}", path.data()));
-            return -1;
+            sys::warn(read.error(), std::format("read: {}", path));
+            return std::unexpected(read.error());
+        }
+        got = *read;
+        if (got == 0) {
+            break;
         }
         p += got;
         if (p >= limit) {
@@ -93,12 +96,12 @@ int proc_info(pid_t pid, int* ttynr, unsigned long long* starttime) {
 
     // error if it contains NULL bytes
     if (got != 0 || p == begin) {
-        sys::warn_errno(std::format("NUL in: {}", path.data()));
-        return -1;
+        sys::warn(sys::fail_errno(0), std::format("NUL in: {}", path));
+        return std::unexpected(sys::fail_errno(0));
     }
     if (std::memchr(begin, '\0', static_cast<size_t>(p - begin) - 1) != nullptr) {
-        sys::warn_errno(std::format("NUL in: {}", path.data()));
-        return -1;
+        sys::warn(sys::fail_errno(0), std::format("NUL in: {}", path));
+        return std::unexpected(sys::fail_errno(0));
     }
 
     *p = '\0';
@@ -107,192 +110,179 @@ int proc_info(pid_t pid, int* ttynr, unsigned long long* starttime) {
     // 'comm' can include spaces and closing parentheses too.
     p = std::strrchr(begin, ')');
     if (p == nullptr) {
-        return -1;
+        return std::unexpected(sys::fail(sys::Err::kInvalidNumber));
     }
 
+    ProcInfo info;
     int field = 2;
     char* saveptr = nullptr;
     for (char* token = ::strtok_r(p, " ", &saveptr); token != nullptr;
          token = ::strtok_r(nullptr, " ", &saveptr)) {
         switch (field++) {
         case 7: {
-            const sys::IntResult parsed = sys::parse_int(token, INT_MIN, INT_MAX);
-            if (parsed.has_error()) {
-                return -1;
+            const auto parsed = sys::parse_int(token, INT_MIN, INT_MAX);
+            if (!parsed) {
+                return std::unexpected(parsed.error());
             }
-            *ttynr = static_cast<int>(parsed.value);
+            info.tty_nr = static_cast<int>(*parsed);
             break;
         }
         case 22: {
-            const sys::U64Result parsed = sys::parse_u64(token);
-            if (!parsed.ok) {
-                return -1;
+            const auto parsed = sys::parse_u64(token);
+            if (!parsed) {
+                return std::unexpected(parsed.error());
             }
-            *starttime = parsed.value;
-            return 0;
+            info.start_time = *parsed;
+            return info;
         }
         default:
             break;
         }
     }
 
-    return -1;
+    return std::unexpected(sys::fail(sys::Err::kInvalidNumber));
 }
 
-int timestamp_path(char* buf, size_t len) {
-    unsigned long long starttime = 0;
-    int ttynr = 0;
-
+sys::Result<std::string> timestamp_path() {
     const pid_t ppid = sys::process::ppid();
     const auto sid = sys::process::session_id();
     if (!sid) {
-        return -1;
+        return std::unexpected(sid.error());
     }
-    if (proc_info(ppid, &ttynr, &starttime) == -1) {
-        return -1;
+    const auto info = proc_info(ppid);
+    if (!info) {
+        return std::unexpected(info.error());
     }
-    const int n = std::snprintf(buf,
-                                len,
-                                "%s/%d-%d-%d-%llu-%d",
-                                kTimestampDir,
-                                static_cast<int>(ppid),
-                                static_cast<int>(*sid),
-                                ttynr,
-                                starttime,
-                                static_cast<int>(sys::process::uid()));
-    if (n < 0 || n >= static_cast<int>(len)) {
-        return -1;
-    }
-    return 0;
+    return std::format("{}/{}-{}-{}-{}-{}",
+                       kTimestampDir,
+                       static_cast<int>(ppid),
+                       static_cast<int>(*sid),
+                       info->tty_nr,
+                       info->start_time,
+                       static_cast<int>(sys::process::uid()));
 }
 
 } // namespace
 
-int timestamp_set(int fd, int secs) {
+sys::Status timestamp_set(const sys::fs::Fd& fd, int secs) {
     struct timespec ts[2];
     const struct timespec timeout = {.tv_sec = secs, .tv_nsec = 0};
 
     if (!clock_now(CLOCK_BOOTTIME, &ts[0]) || !clock_now(CLOCK_REALTIME, &ts[1])) {
-        return -1;
+        return std::unexpected(sys::fail_errno(errno));
     }
 
     ts[0] = sys::ts_add(ts[0], timeout);
     ts[1] = sys::ts_add(ts[1], timeout);
-    if (sys::fs::futimens_fd(fd, ts)) {
-        return -1;
-    }
-    return 0;
+    return sys::fs::futimens_fd(fd.get(), ts);
 }
 
-// Returns 1 if the timestamp is valid, 0 if it is invalid.
-int timestamp_check(int fd, int secs) {
+namespace {
+
+// Returns true if the timestamp is valid. Fatal inconsistencies exit through
+// sys::die, exactly like the errx() calls of the original.
+bool timestamp_check(int fd, int secs) {
     struct timespec ts[2];
     const struct timespec timeout = {.tv_sec = secs, .tv_nsec = 0};
 
-    const sys::fs::StatResult st = sys::fs::fstat_fd(fd);
-    if (st.error) {
-        sys::die_errno(1, "fstat");
+    const auto st = sys::fs::fstat_fd(fd);
+    if (!st) {
+        sys::die(1, st.error(), "fstat");
     }
-    if (st.st.st_uid != 0 || st.st.st_gid != sys::process::gid() ||
-        st.st.st_mode != (S_IFREG | 0000)) {
+    if (st->st_uid != 0 || st->st_gid != sys::process::gid() || st->st_mode != (S_IFREG | 0000)) {
         sys::die(1, "timestamp uid, gid or mode wrong");
     }
 
     // this timestamp was created but never set, invalid but no error
-    if (!sys::ts_set(st.st.st_atim) || !sys::ts_set(st.st.st_mtim)) {
-        return 0;
+    if (!sys::ts_set(st->st_atim) || !sys::ts_set(st->st_mtim)) {
+        return false;
     }
 
     if (!clock_now(CLOCK_BOOTTIME, &ts[0]) || !clock_now(CLOCK_REALTIME, &ts[1])) {
-        sys::warn_errno("clock_gettime");
-        return 0;
+        sys::warn(sys::fail_errno(errno), "clock_gettime");
+        return false;
     }
 
     // check if timestamp is too old
-    if (sys::ts_lt(st.st.st_atim, ts[0]) || sys::ts_lt(st.st.st_mtim, ts[1])) {
-        return 0;
+    if (sys::ts_lt(st->st_atim, ts[0]) || sys::ts_lt(st->st_mtim, ts[1])) {
+        return false;
     }
 
     // check if timestamp is too far in the future
     ts[0] = sys::ts_add(ts[0], timeout);
     ts[1] = sys::ts_add(ts[1], timeout);
-    if (sys::ts_gt(st.st.st_atim, ts[0]) || sys::ts_gt(st.st.st_mtim, ts[1])) {
+    if (sys::ts_gt(st->st_atim, ts[0]) || sys::ts_gt(st->st_mtim, ts[1])) {
         sys::warn("timestamp too far in the future");
-        return 0;
+        return false;
     }
 
-    return 1;
+    return true;
 }
 
-std::optional<sys::fs::Fd> timestamp_open(int* valid, int secs) {
+} // namespace
+
+sys::Result<OpenedTimestamp> timestamp_open(int secs) {
     struct timespec zero[2] = {};
-    std::array<char, kPathSize> path{};
-    int serrno = 0;
 
-    *valid = 0;
-
-    const sys::fs::StatResult st = sys::fs::stat_follow(kTimestampDir);
-    if (st.error) {
-        if (st.error.value() != ENOENT) {
-            return std::nullopt;
+    const auto st = sys::fs::stat_follow(kTimestampDir);
+    if (!st) {
+        if (!(st.error().code == std::errc::no_such_file_or_directory)) {
+            return std::unexpected(st.error());
         }
-        if (sys::fs::mkdir_path(kTimestampDir, 0700)) {
-            return std::nullopt;
+        const sys::Status made = sys::fs::mkdir_path(kTimestampDir, 0700);
+        if (!made) {
+            return std::unexpected(made.error());
         }
-    } else if (st.st.st_uid != 0 || st.st.st_mode != (S_IFDIR | 0700)) {
-        return std::nullopt;
+    } else if (st->st_uid != 0 || st->st_mode != (S_IFDIR | 0700)) {
+        // The original returned -1 without a message here; EACCES keeps that
+        // shape without inventing a new diagnostic.
+        return std::unexpected(sys::fail_errno(EACCES));
     }
 
-    if (timestamp_path(path.data(), path.size()) == -1) {
-        return std::nullopt;
+    auto path = timestamp_path();
+    if (!path) {
+        return std::unexpected(path.error());
     }
 
-    auto fd = sys::fs::open_file(path.data(), O_RDONLY | O_NOFOLLOW);
+    auto fd = sys::fs::open_file(*path, O_RDONLY | O_NOFOLLOW);
     if (!fd) {
-        if (errno != ENOENT) {
-            sys::die_errno(1, std::format("open: {}", path.data()));
+        if (!(fd.error().code == std::errc::no_such_file_or_directory)) {
+            sys::die(1, fd.error(), std::format("open: {}", *path));
         }
 
-        std::array<char, kPathSize> tmp{};
-        const int n = std::snprintf(tmp.data(),
-                                    tmp.size(),
-                                    "%s/.tmp-%d",
-                                    kTimestampDir,
-                                    static_cast<int>(sys::process::pid()));
-        if (n < 0 || n >= static_cast<int>(tmp.size())) {
-            return std::nullopt;
-        }
-
-        auto created =
-            sys::fs::open_file(tmp.data(), O_RDONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0000);
+        const std::string tmp =
+            std::format("{}/.tmp-{}", kTimestampDir, static_cast<int>(sys::process::pid()));
+        auto created = sys::fs::open_file(tmp, O_RDONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0000);
         if (!created) {
-            return std::nullopt;
+            return std::unexpected(created.error());
         }
-        if (sys::fs::futimens_fd(created->get(), zero) ||
-            sys::fs::rename_path(tmp.data(), path.data())) {
-            serrno = errno;
-            (void)sys::fs::unlink_path(tmp.data());
-            errno = serrno;
-            return std::nullopt;
+        const sys::Status stamped = sys::fs::futimens_fd(created->get(), zero);
+        if (!stamped) {
+            (void)sys::fs::unlink_path(tmp);
+            return std::unexpected(stamped.error());
         }
-        return std::move(*created);
+        const sys::Status renamed = sys::fs::rename_path(tmp, *path);
+        if (!renamed) {
+            (void)sys::fs::unlink_path(tmp);
+            return std::unexpected(renamed.error());
+        }
+        return OpenedTimestamp{std::move(*created), false};
     }
 
-    *valid = timestamp_check(fd->get(), secs);
-    return std::move(*fd);
+    const bool valid = timestamp_check(fd->get(), secs);
+    return OpenedTimestamp{std::move(*fd), valid};
 }
 
-int timestamp_clear() {
-    std::array<char, kPathSize> path{};
-
-    if (timestamp_path(path.data(), path.size()) == -1) {
-        return -1;
+sys::Status timestamp_clear() {
+    auto path = timestamp_path();
+    if (!path) {
+        return std::unexpected(path.error());
     }
-    const std::error_code error = sys::fs::unlink_path(path.data());
-    if (error && error.value() != ENOENT) {
-        return -1;
+    const sys::Status unlinked = sys::fs::unlink_path(*path);
+    if (!unlinked && !(unlinked.error().code == std::errc::no_such_file_or_directory)) {
+        return unlinked;
     }
-    return 0;
+    return {};
 }
 
 } // namespace doas

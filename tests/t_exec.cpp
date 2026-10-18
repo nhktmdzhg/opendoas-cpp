@@ -43,8 +43,8 @@ int exec_in_child(std::string_view name, std::vector<char*> argv, std::vector<ch
     std::fflush(nullptr);
     const pid_t child = fork();
     if (child == 0) {
-        const std::error_code error = doas::execvpe(name, argv, envp);
-        ::_exit(error.value() == 0 ? 99 : static_cast<int>(error.value()));
+        const sys::Error error = doas::execvpe(name, argv, envp);
+        ::_exit(error.code.value() == 0 ? 99 : error.code.value());
     }
     if (child == -1) {
         std::perror("fork");
@@ -94,23 +94,23 @@ int main() {
     // An empty name is rejected with ENOENT.
     {
         std::vector<char*> argv = {nullptr};
-        const std::error_code error = doas::execvpe("", argv, envp);
-        CHECK_EQ(error.value(), ENOENT);
+        const sys::Error error = doas::execvpe("", argv, envp);
+        CHECK(error.code == std::errc::no_such_file_or_directory);
     }
 
     // A missing command reports ENOENT (doas turns that into "command not found").
     {
         std::vector<char*> argv = {nullptr};
-        const std::error_code error = doas::execvpe("doas-no-such-command", argv, envp);
-        CHECK_EQ(error.value(), ENOENT);
+        const sys::Error error = doas::execvpe("doas-no-such-command", argv, envp);
+        CHECK(error.code == std::errc::no_such_file_or_directory);
     }
 
     // An executable file without a shebang is handed to the shell, exactly like
     // the original (argv[0] == "sh", argv[1] == the script).
     {
         const std::string script = dir + "/plain-script";
-        CHECK(!sys::fs::write_file(script, "exit 42\n"));
-        CHECK(!sys::fs::chmod_path(script, 0755));
+        CHECK(sys::fs::write_file(script, "exit 42\n").has_value());
+        CHECK(sys::fs::chmod_path(script, 0755).has_value());
 
         std::vector<std::string> args = {script};
         std::vector<char*> argv;
@@ -126,7 +126,7 @@ int main() {
     // search continues.
     {
         const std::string long_entry(4100, 'x');
-        CHECK(sys::process::set_env("PATH", long_entry + ":/bin"));
+        CHECK(sys::process::set_env("PATH", long_entry + ":/bin").has_value());
 
         const std::string out_path = dir + "/exec-stderr";
         char out_template[] = "/tmp/doas-exec-stderr-XXXXXX";
@@ -145,8 +145,8 @@ int main() {
                 argv.push_back(arg.data());
             }
             argv.push_back(nullptr);
-            const std::error_code error = doas::execvpe("/bin/true", argv, envp);
-            ::_exit(error.value() == 0 ? 99 : static_cast<int>(error.value()));
+            const sys::Error error = doas::execvpe("/bin/true", argv, envp);
+            ::_exit(error.code.value() == 0 ? 99 : error.code.value());
         }
         int status = 0;
         while (waitpid(child, &status, 0) == -1 && errno == EINTR) {
@@ -165,7 +165,7 @@ int main() {
     // warning and "true" is still found in /bin.
     {
         const std::string long_entry(4100, 'x');
-        CHECK(sys::process::set_env("PATH", long_entry + ":/bin"));
+        CHECK(sys::process::set_env("PATH", long_entry + ":/bin").has_value());
 
         char out_template[] = "/tmp/doas-exec-stderr-XXXXXX";
         const int out_fd = mkstemp(out_template);
@@ -183,8 +183,8 @@ int main() {
                 argv.push_back(arg.data());
             }
             argv.push_back(nullptr);
-            const std::error_code error = doas::execvpe("true", argv, envp);
-            ::_exit(error.value() == 0 ? 99 : static_cast<int>(error.value()));
+            const sys::Error error = doas::execvpe("true", argv, envp);
+            ::_exit(error.code.value() == 0 ? 99 : error.code.value());
         }
         int status = 0;
         while (waitpid(child, &status, 0) == -1 && errno == EINTR) {

@@ -16,8 +16,8 @@ file operations keep working exactly like the original subprocess calls.
 
 ## Requirements
 
-* Linux with glibc (PAM, `getspnam(3)`, `closefrom(3)` and `close_range(3)` are
-  used directly; BSD/macOS are not supported).
+* Linux with glibc (PAM, `getspnam(3)`, `closefrom(3)` and `close_range(3)` via
+  glibc's `closefrom` are used; BSD/macOS are not supported).
 * CMake ≥ 3.22, Ninja, Bison ≥ 3.8, an LLVM toolchain (clang, lld, llvm-ar,
   llvm-ranlib) and optionally ccache.
 * libpam (default) or libcrypt, depending on the authentication provider.
@@ -125,7 +125,7 @@ tests/tools/regen_golden.sh /path/to/reference/doas
 where the reference binary is built from the commit before the C++ port:
 
 ```sh
-git worktree add /tmp/doas-ref 6266763
+git worktree add /tmp/doas-ref b96106b
 (cd /tmp/doas-ref && ./configure && make)
 ```
 

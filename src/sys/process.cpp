@@ -17,27 +17,28 @@ std::error_code last_error() {
     return std::error_code(errno, std::generic_category());
 }
 
+sys::Error fail_errno_here() {
+    return sys::fail_errno(errno);
+}
+
 } // namespace
 
 namespace sys::process {
 
-std::expected<pid_t, std::error_code> fork_child() {
+Result<pid_t> fork_child() {
     const pid_t child = ::fork();
     if (child == -1) {
-        return std::unexpected(last_error());
+        return std::unexpected(fail_errno_here());
     }
     return child;
 }
 
-WaitResult wait_for(pid_t child) {
-    WaitResult result;
+Result<WaitStatus> wait_for(pid_t child) {
     int status = 0;
     if (::waitpid(child, &status, 0) == -1) {
-        result.error = last_error();
-        return result;
+        return std::unexpected(fail_errno_here());
     }
-    result.status = status;
-    return result;
+    return WaitStatus(status);
 }
 
 std::error_code
@@ -100,10 +101,10 @@ pid_t ppid() {
     return ::getppid();
 }
 
-std::expected<pid_t, std::error_code> session_id() {
+Result<pid_t> session_id() {
     const pid_t sid = ::getsid(0);
     if (sid == -1) {
-        return std::unexpected(last_error());
+        return std::unexpected(fail_errno_here());
     }
     return sid;
 }
@@ -112,8 +113,8 @@ void send_signal(pid_t target, int sig) {
     (void)::kill(target, sig);
 }
 
-unsigned int sleep_seconds(unsigned int seconds) {
-    return ::sleep(seconds);
+void sleep_seconds(unsigned int seconds) {
+    (void)::sleep(seconds);
 }
 
 std::optional<std::string> get_env(std::string_view name) {
@@ -125,10 +126,13 @@ std::optional<std::string> get_env(std::string_view name) {
     return std::string(value);
 }
 
-bool set_env(std::string_view name, std::string_view value) {
+Status set_env(std::string_view name, std::string_view value) {
     const std::string key(name);
     const std::string val(value);
-    return ::setenv(key.c_str(), val.c_str(), 1) == 0;
+    if (::setenv(key.c_str(), val.c_str(), 1) != 0) {
+        return std::unexpected(fail_errno_here());
+    }
+    return {};
 }
 
 std::string hostname() {
@@ -153,61 +157,61 @@ gid_t egid() {
     return ::getegid();
 }
 
-std::error_code set_res_uid(uid_t real, uid_t effective, uid_t saved) {
+Status set_res_uid(uid_t real, uid_t effective, uid_t saved) {
     if (::setresuid(real, effective, saved) != 0) {
-        return last_error();
+        return std::unexpected(fail_errno_here());
     }
     return {};
 }
 
-std::error_code set_res_gid(gid_t real, gid_t effective, gid_t saved) {
+Status set_res_gid(gid_t real, gid_t effective, gid_t saved) {
     if (::setresgid(real, effective, saved) != 0) {
-        return last_error();
+        return std::unexpected(fail_errno_here());
     }
     return {};
 }
 
-std::error_code init_groups(std::string_view user, gid_t gid) {
+Status init_groups(std::string_view user, gid_t gid) {
     const std::string name(user);
     if (::initgroups(name.c_str(), gid) != 0) {
-        return last_error();
+        return std::unexpected(fail_errno_here());
     }
     return {};
 }
 
-SigActionResult install_handler(int sig, void (*handler)(int)) {
+Result<struct sigaction> install_handler(int sig, void (*handler)(int)) {
     struct sigaction act{};
     act.sa_handler = handler;
     ::sigemptyset(&act.sa_mask);
     act.sa_flags = 0;
 
-    SigActionResult result;
-    if (::sigaction(sig, &act, &result.previous) != 0) {
-        result.error = last_error();
+    struct sigaction previous{};
+    if (::sigaction(sig, &act, &previous) != 0) {
+        return std::unexpected(fail_errno_here());
     }
-    return result;
+    return previous;
 }
 
-std::error_code restore_handler(int sig, const struct sigaction& action) {
+Status restore_handler(int sig, const struct sigaction& action) {
     if (::sigaction(sig, &action, nullptr) != 0) {
-        return last_error();
+        return std::unexpected(fail_errno_here());
     }
     return {};
 }
 
-MaskResult block_all_signals() {
-    MaskResult result;
+Result<sigset_t> block_all_signals() {
     sigset_t set;
+    sigset_t previous{};
     ::sigfillset(&set);
-    if (::sigprocmask(SIG_BLOCK, &set, &result.previous) != 0) {
-        result.error = last_error();
+    if (::sigprocmask(SIG_BLOCK, &set, &previous) != 0) {
+        return std::unexpected(fail_errno_here());
     }
-    return result;
+    return previous;
 }
 
-std::error_code unblock_signals(const sigset_t& set) {
+Status unblock_signals(const sigset_t& set) {
     if (::sigprocmask(SIG_UNBLOCK, &set, nullptr) != 0) {
-        return last_error();
+        return std::unexpected(fail_errno_here());
     }
     return {};
 }

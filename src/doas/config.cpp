@@ -27,35 +27,31 @@ constexpr gid_t kGidMax = DOAS_GID_MAX;
 
 std::optional<uid_t> parse_uid(std::string_view text) {
     // parseuid(): a passwd entry wins over a number.
-    const sys::PwResult pw = sys::pw_by_name(text);
-    if (pw.entry) {
-        const uid_t uid = pw.entry->uid;
-        if (uid == kUidMax) {
+    if (const auto pw = sys::pw_by_name(text)) {
+        if (pw->uid == kUidMax) {
             return std::nullopt;
         }
-        return uid;
+        return pw->uid;
     }
-    const sys::IntResult num = sys::parse_int(text, 0, static_cast<long long>(kUidMax) - 1);
-    if (num.has_error()) {
+    const auto num = sys::parse_int(text, 0, static_cast<long long>(kUidMax) - 1);
+    if (!num) {
         return std::nullopt;
     }
-    return static_cast<uid_t>(num.value);
+    return static_cast<uid_t>(*num);
 }
 
 std::optional<gid_t> parse_gid(std::string_view text) {
-    const sys::GrResult gr = sys::gr_by_name(text);
-    if (gr.entry) {
-        const gid_t gid = gr.entry->gid;
-        if (gid == kGidMax) {
+    if (const auto gr = sys::gr_by_name(text)) {
+        if (gr->gid == kGidMax) {
             return std::nullopt;
         }
-        return gid;
+        return gr->gid;
     }
-    const sys::IntResult num = sys::parse_int(text, 0, static_cast<long long>(kGidMax) - 1);
-    if (num.has_error()) {
+    const auto num = sys::parse_int(text, 0, static_cast<long long>(kGidMax) - 1);
+    if (!num) {
         return std::nullopt;
     }
-    return static_cast<gid_t>(num.value);
+    return static_cast<gid_t>(*num);
 }
 
 bool match_rule(const MatchContext& ctx,
@@ -126,21 +122,22 @@ permit(const MatchContext& ctx, std::string_view cmd, std::span<const std::strin
 void parse_config(std::string_view filename, bool checkperms) {
     std::optional<sys::FileHandle> file = sys::FileHandle::open_read(filename);
     if (!file) {
+        // The original printed the errno of the failed open here.
         if (checkperms) {
-            sys::die_errno(1, std::format("doas is not enabled, {}", filename));
+            sys::die(1, sys::fail_errno(errno), std::format("doas is not enabled, {}", filename));
         }
-        sys::die_errno(1, std::format("could not open config file {}", filename));
+        sys::die(1, sys::fail_errno(errno), std::format("could not open config file {}", filename));
     }
 
     if (checkperms) {
-        const sys::fs::StatResult sb = sys::fs::fstat_fd(file->fd());
-        if (sb.error) {
-            sys::die_errno(1, std::format("fstat(\"{}\")", filename));
+        const auto sb = sys::fs::fstat_fd(file->fd());
+        if (!sb) {
+            sys::die(1, sb.error(), std::format("fstat(\"{}\")", filename));
         }
-        if ((sb.st.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+        if ((sb->st_mode & (S_IWGRP | S_IWOTH)) != 0) {
             sys::die(1, std::format("{} is writable by group or other", filename));
         }
-        if (sb.st.st_uid != 0) {
+        if (sb->st_uid != 0) {
             sys::die(1, std::format("{} is not owned by root", filename));
         }
     }

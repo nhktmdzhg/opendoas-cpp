@@ -1,5 +1,6 @@
 #include "sys/io.hpp"
 
+#include <cerrno>
 #include <cstdio>
 #include <string>
 
@@ -17,11 +18,14 @@ void err_out(std::string_view s) {
     }
 }
 
-bool err_out_checked(std::string_view s) {
+Status err_out_checked(std::string_view s) {
     if (s.empty()) {
-        return true;
+        return {};
     }
-    return std::fwrite(s.data(), 1, s.size(), stderr) == s.size();
+    if (std::fwrite(s.data(), 1, s.size(), stderr) != s.size()) {
+        return std::unexpected(fail_errno(errno));
+    }
+    return {};
 }
 
 void flush_all() {

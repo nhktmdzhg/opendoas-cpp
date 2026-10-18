@@ -129,8 +129,8 @@ int main() {
 
     for (size_t i = 0; i < matrix.size(); i++) {
         const std::string config = dir + "/case" + std::to_string(i) + ".conf";
-        const std::error_code error = sys::fs::write_file(config, matrix[i].config);
-        if (error) {
+        const sys::Status written = sys::fs::write_file(config, matrix[i].config);
+        if (!written) {
             test::report(__FILE__, __LINE__, "matrix config", "cannot write");
             continue;
         }

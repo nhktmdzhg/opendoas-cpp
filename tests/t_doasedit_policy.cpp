@@ -1,5 +1,6 @@
 // The doasedit file classifier and its error branches, driven through the
-// scripted doas bridge (tests/fake_bridge.cpp).
+// scripted doas bridge (tests/fake_bridge.cpp). Error messages are checked through
+// doasedit::prose(), i.e. exactly what the user sees.
 #include "doasedit/doasedit.hpp"
 #include "fake_bridge.hpp"
 #include "sys/fs.hpp"
@@ -36,8 +37,8 @@ std::string make_temp_dir() {
 }
 
 void write_file(const std::string& path, std::string_view content, mode_t mode) {
-    (void)sys::fs::write_file(path, content);
-    (void)sys::fs::chmod_path(path, mode);
+    CHECK(sys::fs::write_file(path, content).has_value());
+    CHECK(sys::fs::chmod_path(path, mode).has_value());
 }
 
 } // namespace
@@ -56,21 +57,23 @@ int main() {
 
     write_file(plain, "hello\n", 0644);
     write_file(readonly, "hello\n", 0444);
-    (void)sys::fs::mkdir_path(subdir, 0755);
-    (void)sys::fs::mkdir_path(blocked, 0755);
+    CHECK(sys::fs::mkdir_path(subdir, 0755).has_value());
+    CHECK(sys::fs::mkdir_path(blocked, 0755).has_value());
     write_file(inner, "secret\n", 0444);
-    (void)sys::fs::chmod_path(blocked, 0000);
+    CHECK(sys::fs::chmod_path(blocked, 0000).has_value());
 
     // Stat-able files and directories: no doas call at all.
     {
         bridge::script({});
         const auto status = doasedit::check_file_status(plain);
-        CHECK(status.error.empty());
-        CHECK(status.info.exists);
-        CHECK(status.info.readable);
-        CHECK(status.info.writable);
-        CHECK(status.info.is_owned_by_user);
-        CHECK(!status.info.is_directory);
+        CHECK(status.has_value());
+        if (status) {
+            CHECK(status->exists);
+            CHECK(status->readable);
+            CHECK(status->writable);
+            CHECK(status->is_owned_by_user);
+            CHECK(!status->is_directory);
+        }
         CHECK_EQ(bridge::calls().size(), static_cast<size_t>(0));
         CHECK(bridge::script_consumed());
     }
@@ -80,23 +83,27 @@ int main() {
     {
         bridge::script({});
         const auto status = doasedit::check_file_status(readonly);
-        CHECK(status.error.empty());
-        CHECK(status.info.exists);
-        CHECK(!status.info.readable);
-        CHECK(!status.info.writable);
-        CHECK(status.info.is_owned_by_user);
+        CHECK(status.has_value());
+        if (status) {
+            CHECK(status->exists);
+            CHECK(!status->readable);
+            CHECK(!status->writable);
+            CHECK(status->is_owned_by_user);
+        }
     }
 
     // Directories are reported with exists = true and is_directory = true.
     {
         bridge::script({});
         const auto status = doasedit::check_file_status(subdir);
-        CHECK(status.error.empty());
-        CHECK(status.info.exists);
-        CHECK(status.info.is_directory);
-        CHECK(!status.info.readable);
-        CHECK(!status.info.writable);
-        CHECK(!status.info.is_owned_by_user);
+        CHECK(status.has_value());
+        if (status) {
+            CHECK(status->exists);
+            CHECK(status->is_directory);
+            CHECK(!status->readable);
+            CHECK(!status->writable);
+            CHECK(!status->is_owned_by_user);
+        }
     }
 
     // A new file in a directory owned by the invoking user is refused; the
@@ -104,8 +111,12 @@ int main() {
     {
         bridge::script({});
         const auto status = doasedit::check_file_status(missing);
-        CHECK_EQ(status.error,
-                 std::string(missing) + ": creating files in your own directory is not permitted");
+        CHECK(!status.has_value());
+        if (!status) {
+            CHECK_EQ(doasedit::prose(status.error()),
+                     std::string(missing) +
+                         ": creating files in your own directory is not permitted");
+        }
     }
 
     // A new file whose parent directory does not exist: the two doas test calls
@@ -114,7 +125,11 @@ int main() {
         bridge::script(
             {{{"test", "-e", no_parent}, result(1)}, {{"test", "-d", dir + "/nodir"}, result(1)}});
         const auto status = doasedit::check_file_status(no_parent);
-        CHECK_EQ(status.error, std::string(dir + "/nodir") + ": no such directory");
+        CHECK(!status.has_value());
+        if (!status) {
+            CHECK_EQ(doasedit::prose(status.error()),
+                     std::string(dir + "/nodir") + ": no such directory");
+        }
         CHECK(bridge::script_consumed());
     }
 
@@ -124,11 +139,13 @@ int main() {
                         {{"test", "-f", inner}, result(0)},
                         {{"stat", "-c", "%u %a", inner}, result(0, "0 440\n")}});
         const auto status = doasedit::check_file_status(inner);
-        CHECK(status.error.empty());
-        CHECK(status.info.exists);
-        CHECK(status.info.readable);
-        CHECK(!status.info.writable);
-        CHECK(!status.info.is_owned_by_user);
+        CHECK(status.has_value());
+        if (status) {
+            CHECK(status->exists);
+            CHECK(status->readable);
+            CHECK(!status->writable);
+            CHECK(!status->is_owned_by_user);
+        }
         CHECK(bridge::script_consumed());
     }
 
@@ -138,8 +155,10 @@ int main() {
                         {{"test", "-f", inner}, result(0)},
                         {{"stat", "-c", "%u %a", inner}, result(0, "0 200")}});
         const auto status = doasedit::check_file_status(inner);
-        CHECK(status.error.empty());
-        CHECK(status.info.writable);
+        CHECK(status.has_value());
+        if (status) {
+            CHECK(status->writable);
+        }
         CHECK(bridge::script_consumed());
     }
 
@@ -147,9 +166,11 @@ int main() {
     {
         bridge::script({{{"test", "-e", inner}, result(0)}, {{"test", "-f", inner}, result(1)}});
         const auto status = doasedit::check_file_status(inner);
-        CHECK(status.error.empty());
-        CHECK(status.info.exists);
-        CHECK(status.info.is_directory);
+        CHECK(status.has_value());
+        if (status) {
+            CHECK(status->exists);
+            CHECK(status->is_directory);
+        }
         CHECK(bridge::script_consumed());
     }
 
@@ -159,7 +180,11 @@ int main() {
                         {{"test", "-f", inner}, result(0)},
                         {{"stat", "-c", "%u %a", inner}, result(1)}});
         const auto status = doasedit::check_file_status(inner);
-        CHECK_EQ(status.error, std::string("you are not permitted to call 'doas cat'"));
+        CHECK(!status.has_value());
+        if (!status) {
+            CHECK_EQ(doasedit::prose(status.error()),
+                     std::string("you are not permitted to call 'doas cat'"));
+        }
         CHECK(bridge::script_consumed());
     }
 
@@ -169,14 +194,22 @@ int main() {
                         {{"test", "-f", inner}, result(0)},
                         {{"stat", "-c", "%u %a", inner}, result(0, "garbage")}});
         const auto status = doasedit::check_file_status(inner);
-        CHECK_EQ(status.error, std::string("doas validation error: Invalid stat output"));
+        CHECK(!status.has_value());
+        if (!status) {
+            CHECK_EQ(doasedit::prose(status.error()),
+                     std::string("doas validation error: Invalid stat output"));
+        }
     }
     {
         bridge::script({{{"test", "-e", inner}, result(0)},
                         {{"test", "-f", inner}, result(0)},
                         {{"stat", "-c", "%u %a", inner}, result(0, "x 440")}});
         const auto status = doasedit::check_file_status(inner);
-        CHECK_EQ(status.error, std::string("doas validation error: Invalid UID format"));
+        CHECK(!status.has_value());
+        if (!status) {
+            CHECK_EQ(doasedit::prose(status.error()),
+                     std::string("doas validation error: Invalid UID format"));
+        }
     }
     // An unparsable mode falls back to 0644, whose owner write bit makes the file
     // "writable" for the doas branch.
@@ -185,29 +218,43 @@ int main() {
                         {{"test", "-f", inner}, result(0)},
                         {{"stat", "-c", "%u %a", inner}, result(0, "0 zzz")}});
         const auto status = doasedit::check_file_status(inner);
-        CHECK(status.error.empty());
-        CHECK(status.info.writable);
+        CHECK(status.has_value());
+        if (status) {
+            CHECK(status->writable);
+        }
     }
 
     // process_file(): a trailing slash is refused before anything else.
     {
         bridge::script({});
-        const std::string error = doasedit::process_file(dir + "/", "/bin/true", dir);
-        CHECK_EQ(error, std::string(dir + "/") + ": cannot edit directories");
+        const auto status = doasedit::process_file(dir + "/", "/bin/true", dir);
+        CHECK(!status.has_value());
+        if (!status) {
+            CHECK_EQ(doasedit::prose(status.error()),
+                     std::string(dir + "/") + ": cannot edit directories");
+        }
     }
 
     // A path without a final component has no file name.
     {
         bridge::script({});
-        const std::string error = doasedit::process_file(dir + "/..", "/bin/true", dir);
-        CHECK_EQ(error, std::string("invalid editor command: 'Invalid file path'"));
+        const auto status = doasedit::process_file(dir + "/..", "/bin/true", dir);
+        CHECK(!status.has_value());
+        if (!status) {
+            CHECK_EQ(doasedit::prose(status.error()),
+                     std::string("invalid editor command: 'Invalid file path'"));
+        }
     }
 
     // Editing your own file is refused.
     {
         bridge::script({});
-        const std::string error = doasedit::process_file(plain, "/bin/true", dir);
-        CHECK_EQ(error, std::string(plain) + ": editing your own files is not permitted");
+        const auto status = doasedit::process_file(plain, "/bin/true", dir);
+        CHECK(!status.has_value());
+        if (!status) {
+            CHECK_EQ(doasedit::prose(status.error()),
+                     std::string(plain) + ": editing your own files is not permitted");
+        }
     }
 
     // A file that is not owned by the user but cannot be read: the direct copy
@@ -216,11 +263,15 @@ int main() {
         bridge::script({{{"test", "-e", inner}, result(0)},
                         {{"test", "-f", inner}, result(0)},
                         {{"stat", "-c", "%u %a", inner}, result(0, "0 444")}});
-        const std::string error = doasedit::process_file(inner, "/bin/true", dir);
-        CHECK_EQ(error, std::string("Permission denied (os error 13)"));
+        const auto status = doasedit::process_file(inner, "/bin/true", dir);
+        CHECK(!status.has_value());
+        if (!status) {
+            CHECK_EQ(doasedit::prose(status.error()),
+                     std::string("Permission denied (os error 13)"));
+        }
     }
 
-    (void)sys::fs::chmod_path(blocked, 0755);
+    CHECK(sys::fs::chmod_path(blocked, 0755).has_value());
     std::error_code ignored;
     fs::remove_all(dir, ignored);
 

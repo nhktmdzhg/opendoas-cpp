@@ -23,17 +23,20 @@
 // Port of the doasedit Rust implementation (main.rs, file_handler.rs, editor.rs,
 // utils.rs, error.rs). Every observable message, branch and quirk is kept; the
 // only structural change is that the "doas ..." subprocesses are replaced by the
-// in-process doas applet (see bridge.hpp).
+// in-process doas applet (see bridge.hpp) and that failures travel as
+// sys::Error instead of pre-formatted strings.
 #include "doasedit/doasedit.hpp"
 
 #include "doasedit/bridge.hpp"
 #include "doasedit/cli.hpp"
 #include "doasedit/path.hpp"
+#include "sys/error.hpp"
 #include "sys/fs.hpp"
 #include "sys/io.hpp"
 #include "sys/process.hpp"
 #include "sys/strings.hpp"
 
+#include <array>
 #include <cerrno>
 #include <charconv>
 #include <cstdio>
@@ -42,76 +45,72 @@
 #include <filesystem>
 #include <format>
 #include <optional>
-#include <span>
 #include <string>
 #include <string_view>
 #include <sys/stat.h>
 #include <sys/wait.h>
-#include <system_error>
 #include <unistd.h>
-#include <vector>
+#include <utility>
 
 namespace doasedit {
 
 namespace {
 
-// ---------------------------------------------------------------------------
-// Messages (verbatim from error.rs and the call sites)
-// ---------------------------------------------------------------------------
+class DoaseditCategory : public std::error_category {
+  public:
+    [[nodiscard]] const char* name() const noexcept override {
+        return "doasedit";
+    }
 
-// Rust's io::Error Display for an OS error.
-std::string rust_io_msg(const std::error_code& error) {
-    return std::format("{} (os error {})", std::strerror(error.value()), error.value());
+    [[nodiscard]] std::string message(int value) const override {
+        switch (static_cast<Err>(value)) {
+        case Err::kRootUser:
+            return "using this program as root is not permitted";
+        case Err::kNoDoas:
+            return "unable to run 'doas'";
+        case Err::kEditorInvalid:
+            return "invalid editor command";
+        case Err::kEditorFailed:
+            return "editor exited with non-zero status";
+        case Err::kCannotEditDir:
+            return "cannot edit directories";
+        case Err::kNotRegular:
+            return "not a regular file";
+        case Err::kOwnFile:
+            return "editing your own files is not permitted";
+        case Err::kOwnDir:
+            return "creating files in your own directory is not permitted";
+        case Err::kWritableDir:
+            return "creating files in a user-writable directory is not permitted";
+        case Err::kNoDirectory:
+            return "no such directory";
+        case Err::kReadableWritable:
+            return "editing user-readable and -writable files is not permitted";
+        case Err::kDoasCat:
+            return "you are not permitted to call 'doas cat'";
+        case Err::kThreeAttempts:
+            return "3 incorrect password attempts";
+        case Err::kInterrupted:
+            return "interrupted";
+        case Err::kUserAbort:
+            return "aborted by user";
+        case Err::kInvalidPath:
+            return "Invalid file path";
+        case Err::kTempDirectory:
+            return "Error creating temporary directory";
+        case Err::kValidation:
+            return "doas validation error";
+        }
+        return std::format("doasedit error {}", value);
+    }
+};
+
+// Builds the error value. subject carries the path or the inner message that the
+// original Rust code interpolated into the text.
+sys::Error error_of(Err kind, std::string_view subject = {}) {
+    return sys::with_subject(sys::Error{make_error_code(kind), {}}, subject);
 }
 
-std::string invalid_editor(std::string_view msg) {
-    return std::format("invalid editor command: '{}'", msg);
-}
-
-std::string cannot_edit_directory(std::string_view path) {
-    return std::format("{}: cannot edit directories", path);
-}
-
-std::string not_regular_file(std::string_view path) {
-    return std::format("{}: not a regular file", path);
-}
-
-std::string cannot_edit_own_file(std::string_view path) {
-    return std::format("{}: editing your own files is not permitted", path);
-}
-
-std::string cannot_create_file_in_own_dir(std::string_view path) {
-    return std::format("{}: creating files in your own directory is not permitted", path);
-}
-
-std::string cannot_create_file_in_writable_dir(std::string_view path) {
-    return std::format("{}: creating files in a user-writable directory is not permitted", path);
-}
-
-std::string no_directory_exists(std::string_view path) {
-    return std::format("{}: no such directory", path);
-}
-
-std::string cannot_edit_readable_writable_file(std::string_view path) {
-    return std::format("{}: editing user-readable and -writable files is not permitted", path);
-}
-
-std::string doas_cat_permission_denied() {
-    return "you are not permitted to call 'doas cat'";
-}
-
-std::string doas_validation_error(std::string_view msg) {
-    return std::format("doas validation error: {}", msg);
-}
-
-std::string three_incorrect_password_attempts() {
-    return "3 incorrect password attempts";
-}
-
-constexpr std::string_view kInterrupted = "interrupted";
-constexpr std::string_view kEditorError = "editor exited with non-zero status";
-constexpr std::string_view kUserAbort = "aborted by user";
-constexpr std::string_view kInvalidFilePath = "Invalid file path";
 constexpr std::string_view kCopyPrefix = "copy-of-";
 constexpr std::string_view kPrompt = "(E)dit again, (O)verwrite anyway, (A)bort: [E/o/a]? ";
 
@@ -193,119 +192,44 @@ std::string join_path(std::string_view dir, std::string_view name) {
 // Status checks (utils.rs)
 // ---------------------------------------------------------------------------
 
-std::optional<FileInfo> status_of(std::string_view path, std::string& error) {
-    const sys::fs::StatResult st = sys::fs::stat_follow(path);
-    if (st.error) {
+std::optional<FileInfo> status_of(std::string_view path) {
+    const auto st = sys::fs::stat_follow(path);
+    if (!st) {
         return std::nullopt;
     }
     FileInfo info;
     info.exists = true;
-    info.is_directory = S_ISDIR(st.st.st_mode);
+    info.is_directory = S_ISDIR(st->st_mode);
     if (info.is_directory) {
-        error.clear();
         return info;
     }
-    const unsigned int mode = static_cast<unsigned int>(st.st.st_mode & 07777);
+    const unsigned int mode = static_cast<unsigned int>(st->st_mode & 07777);
     const uid_t uid = sys::process::uid();
-    info.is_owned_by_user = st.st.st_uid == uid;
+    info.is_owned_by_user = st->st_uid == uid;
     info.readable = (mode & 0222U) != 0; // permissions().readonly() == false
-    info.writable = (mode & 0222U) != 0 && st.st.st_uid == uid;
-    error.clear();
+    info.writable = (mode & 0222U) != 0 && st->st_uid == uid;
     return info;
 }
 
 // get_file_metadata_with_doas(): parses "doas stat -c '%u %a' <path>".
-std::optional<std::pair<uid_t, unsigned int>> metadata_with_doas(const std::string& path,
-                                                                 std::string& error) {
+sys::Result<std::pair<uid_t, unsigned int>> metadata_with_doas(const std::string& path) {
     const bridge::Result result =
         bridge::spawn_capture({std::string("stat"), std::string("-c"), std::string("%u %a"), path});
     if (result.status != 0) {
-        error = doas_cat_permission_denied();
-        return std::nullopt;
+        return std::unexpected(error_of(Err::kDoasCat));
     }
 
     const std::vector<std::string_view> parts = split_whitespace(result.out);
     if (parts.size() < 2) {
-        error = doas_validation_error("Invalid stat output");
-        return std::nullopt;
+        return std::unexpected(error_of(Err::kValidation, "Invalid stat output"));
     }
     const std::optional<unsigned int> uid = parse_u32(parts[0]);
     if (!uid) {
-        error = doas_validation_error("Invalid UID format");
-        return std::nullopt;
+        return std::unexpected(error_of(Err::kValidation, "Invalid UID format"));
     }
     const unsigned int mode = parse_u32_base8(parts[1]).value_or(0644U);
-    error.clear();
     return std::pair<uid_t, unsigned int>{static_cast<uid_t>(*uid), mode};
 }
-
-} // namespace
-
-StatusResult check_file_status(std::string_view path) {
-    StatusResult result;
-    const uid_t uid = sys::process::uid();
-
-    // First try without doas.
-    {
-        std::string error;
-        const std::optional<FileInfo> info = status_of(path, error);
-        if (info) {
-            result.info = *info;
-            return result;
-        }
-    }
-
-    // Try with doas.
-    const std::string target(path);
-    const bridge::Result exists = bridge::spawn_discard({"test", "-e", target});
-    if (exists.status == 0) {
-        const bridge::Result is_file = bridge::spawn_discard({"test", "-f", target});
-        if (is_file.status != 0) {
-            result.info.exists = true;
-            result.info.is_directory = true;
-            return result;
-        }
-
-        std::string error;
-        const std::optional<std::pair<uid_t, unsigned int>> metadata =
-            metadata_with_doas(target, error);
-        if (!metadata) {
-            result.error = error;
-            return result;
-        }
-
-        result.info.exists = true;
-        result.info.readable = true; // Assuming readable if doas can read it
-        result.info.writable = (metadata->second & 0200U) != 0; // User write bit
-        result.info.is_owned_by_user = metadata->first == uid;
-        return result;
-    }
-
-    // File doesn't exist, check directory.
-    const std::string dir = path::parent_of(path);
-    const sys::fs::StatResult dir_stat = sys::fs::stat_follow(dir);
-    if (!dir_stat.error) {
-        const unsigned int mode = static_cast<unsigned int>(dir_stat.st.st_mode & 07777);
-        if (dir_stat.st.st_uid == uid) {
-            result.error = cannot_create_file_in_own_dir(path);
-            return result;
-        }
-        if ((mode & 0222U) != 0 && dir_stat.st.st_uid == uid) {
-            result.error = cannot_create_file_in_writable_dir(path);
-            return result;
-        }
-    } else {
-        const bridge::Result dir_exists = bridge::spawn_discard({"test", "-d", dir});
-        if (dir_exists.status != 0) {
-            result.error = no_directory_exists(dir);
-            return result;
-        }
-    }
-
-    return result;
-}
-
-namespace {
 
 // ---------------------------------------------------------------------------
 // editor.rs
@@ -351,18 +275,18 @@ std::optional<std::string> read_user_input(std::string_view prompt) {
 
 // Spawns the editor with inherited stdio, reporting spawn failures the way
 // Rust's Command::status() does (through a pipe so the exec error survives).
-std::string run_editor(const std::string& editor, const std::string& file) {
+sys::Status run_editor(const std::string& editor, const std::string& file) {
     auto pipe = sys::fs::make_pipe();
     if (!pipe) {
-        return invalid_editor(rust_io_msg(pipe.error()));
+        return std::unexpected(error_of(Err::kEditorInvalid, prose(pipe.error())));
     }
     (void)sys::fs::set_close_on_exec(pipe->second.get());
 
     sys::flush_all();
 
-    const std::expected<pid_t, std::error_code> child = sys::process::fork_child();
+    const auto child = sys::process::fork_child();
     if (!child) {
-        return invalid_editor(rust_io_msg(child.error()));
+        return std::unexpected(error_of(Err::kEditorInvalid, prose(child.error())));
     }
 
     if (*child == 0) {
@@ -391,82 +315,70 @@ std::string run_editor(const std::string& editor, const std::string& file) {
     int reported = 0;
     std::memcpy(&reported, raw.data(), sizeof(reported));
 
-    const sys::process::WaitResult waited = sys::process::wait_for(*child);
-    const bool spawn_failed = got && static_cast<size_t>(*got) == sizeof(reported);
-    if (spawn_failed) {
-        return invalid_editor(rust_io_msg(std::error_code(reported, std::generic_category())));
+    const auto waited = sys::process::wait_for(*child);
+    if (got && *got == raw.size()) {
+        return std::unexpected(error_of(Err::kEditorInvalid, prose(sys::fail_errno(reported))));
     }
-    if (waited.error) {
-        return std::string(kEditorError);
+    if (!waited) {
+        return std::unexpected(error_of(Err::kEditorFailed));
     }
-    if (WIFEXITED(waited.status) && WEXITSTATUS(waited.status) == 0) {
+    if (waited->exited() && waited->exit_code() == 0) {
         return {};
     }
-    return std::string(kEditorError);
+    return std::unexpected(error_of(Err::kEditorFailed));
 }
 
 // create_secure_temp_copy()
-std::string create_secure_temp_copy(std::string_view file_path,
-                                    std::string_view temp_dir,
-                                    std::string& tmp_file,
-                                    std::string& tmp_copy) {
+sys::Result<std::pair<std::string, std::string>>
+create_secure_temp_copy(std::string_view file_path, std::string_view temp_dir) {
     const std::optional<std::string> filename = path::file_name_of(file_path);
     if (!filename) {
-        return invalid_editor(kInvalidFilePath);
+        return std::unexpected(error_of(Err::kInvalidPath));
     }
     const std::string copy_name = std::string(kCopyPrefix) + *filename;
 
-    tmp_file = join_path(temp_dir, *filename);
-    tmp_copy = join_path(temp_dir, copy_name);
+    const std::string tmp_file = join_path(temp_dir, *filename);
+    const std::string tmp_copy = join_path(temp_dir, copy_name);
 
-    std::error_code error = sys::fs::write_file(tmp_file, "");
-    if (error) {
-        return rust_io_msg(error);
+    if (sys::Status written = sys::fs::write_file(tmp_file, ""); !written) {
+        return std::unexpected(written.error());
     }
-    error = sys::fs::write_file(tmp_copy, "");
-    if (error) {
-        return rust_io_msg(error);
+    if (sys::Status written = sys::fs::write_file(tmp_copy, ""); !written) {
+        return std::unexpected(written.error());
     }
 
     // Set secure permissions (0600).
-    error = sys::fs::chmod_path(tmp_file, 0600);
-    if (error) {
-        return rust_io_msg(error);
+    if (sys::Status mode = sys::fs::chmod_path(tmp_file, 0600); !mode) {
+        return std::unexpected(mode.error());
     }
-    error = sys::fs::chmod_path(tmp_copy, 0600);
-    if (error) {
-        return rust_io_msg(error);
+    if (sys::Status mode = sys::fs::chmod_path(tmp_copy, 0600); !mode) {
+        return std::unexpected(mode.error());
     }
-    return {};
+    return std::pair<std::string, std::string>{tmp_file, tmp_copy};
 }
 
 // copy_original_content()
-std::string
+sys::Status
 copy_original_content(const std::string& original, const std::string& tmp_file, bool use_doas) {
     if (use_doas) {
         const bridge::Result result = bridge::spawn_capture({"cat", original});
         if (result.status != 0) {
-            return doas_cat_permission_denied();
+            return std::unexpected(error_of(Err::kDoasCat));
         }
-        const std::error_code error = sys::fs::write_file(tmp_file, result.out);
-        if (error) {
-            return rust_io_msg(error);
-        }
-        return {};
+        return sys::fs::write_file(tmp_file, result.out);
     }
-
     const auto copied = sys::fs::copy_file(original, tmp_file);
     if (!copied) {
-        return rust_io_msg(copied.error());
+        return std::unexpected(copied.error());
     }
     return {};
 }
 
 // create_comparison_copy()
-std::string create_comparison_copy(const std::string& tmp_file, const std::string& tmp_copy) {
+sys::Status create_comparison_copy(const std::string& tmp_file, const std::string& tmp_copy) {
     const auto copied = sys::fs::copy_file(tmp_file, tmp_copy);
     if (!copied) {
-        return rust_io_msg(copied.error());
+        return std::unexpected(copied.error());
     }
     return {};
 }
@@ -477,7 +389,7 @@ bool is_doas_config_file(std::string_view file_path) {
 }
 
 // validate_doas_config()
-std::string validate_doas_config(const std::string& tmp_file, const std::string& editor) {
+sys::Status validate_doas_config(const std::string& tmp_file, const std::string& editor) {
     for (;;) {
         const bridge::Result result = bridge::spawn_discard({"-C", tmp_file});
         if (result.status == 0) {
@@ -490,7 +402,7 @@ std::string validate_doas_config(const std::string& tmp_file, const std::string&
 
         const std::optional<std::string> input = read_user_input(kPrompt);
         if (!input) {
-            return std::string(kInterrupted);
+            return std::unexpected(error_of(Err::kInterrupted));
         }
 
         const std::string answer = lower_ascii(trim_ascii(*input));
@@ -498,40 +410,36 @@ std::string validate_doas_config(const std::string& tmp_file, const std::string&
             break;
         }
         if (answer == "a") {
-            return std::string(kUserAbort);
+            return std::unexpected(error_of(Err::kUserAbort));
         }
-        const std::string error = run_editor(editor, tmp_file);
-        if (!error.empty()) {
-            return error;
+        const sys::Status edited = run_editor(editor, tmp_file);
+        if (!edited) {
+            return edited;
         }
     }
-
     return {};
 }
 
 // files_match()
-std::optional<bool>
-files_match(const std::string& first, const std::string& second, std::string& error) {
+sys::Result<bool> files_match(const std::string& first, const std::string& second) {
     const auto content1 = sys::fs::read_file(first);
     if (!content1) {
-        error = rust_io_msg(content1.error());
-        return std::nullopt;
+        return std::unexpected(content1.error());
     }
     const auto content2 = sys::fs::read_file(second);
     if (!content2) {
-        error = rust_io_msg(content2.error());
-        return std::nullopt;
+        return std::unexpected(content2.error());
     }
     return *content1 == *content2;
 }
 
 // write_file_back()
-std::string
+sys::Status
 write_file_back(const std::string& tmp_file, const std::string& original, bool writable) {
     if (writable) {
         const auto copied = sys::fs::copy_file(tmp_file, original);
         if (!copied) {
-            return rust_io_msg(copied.error());
+            return std::unexpected(copied.error());
         }
         return {};
     }
@@ -544,82 +452,170 @@ write_file_back(const std::string& tmp_file, const std::string& original, bool w
             return {};
         }
         if (attempt == 2) {
-            return three_incorrect_password_attempts();
+            return std::unexpected(error_of(Err::kThreeAttempts));
         }
     }
-    return three_incorrect_password_attempts();
+    return std::unexpected(error_of(Err::kThreeAttempts));
 }
 
 } // namespace
 
-std::string
+const std::error_category& category() {
+    static const DoaseditCategory instance;
+    return instance;
+}
+
+std::error_code make_error_code(Err value) noexcept {
+    return std::error_code(static_cast<int>(value), category());
+}
+
+std::string prose(const sys::Error& error) {
+    if (error.code.category() == category()) {
+        switch (static_cast<Err>(error.code.value())) {
+        case Err::kRootUser:
+        case Err::kNoDoas:
+        case Err::kEditorFailed:
+        case Err::kDoasCat:
+        case Err::kThreeAttempts:
+        case Err::kInterrupted:
+        case Err::kUserAbort:
+            return error.code.message();
+        case Err::kEditorInvalid:
+            return std::format("invalid editor command: '{}'", error.subject);
+        case Err::kCannotEditDir:
+        case Err::kNotRegular:
+        case Err::kOwnFile:
+        case Err::kOwnDir:
+        case Err::kWritableDir:
+        case Err::kNoDirectory:
+        case Err::kReadableWritable:
+            return std::format("{}: {}", error.subject, error.code.message());
+        case Err::kValidation:
+            return std::format("doas validation error: {}", error.subject);
+        case Err::kInvalidPath:
+            return std::format("invalid editor command: '{}'", error.code.message());
+        case Err::kTempDirectory:
+            return std::format("Error creating temporary directory: {}", error.subject);
+        }
+    }
+    // Rust's io::Error Display: "<strerror> (os error <N>)".
+    return std::format("{} (os error {})", error.code.message(), error.code.value());
+}
+
+sys::Result<FileInfo> check_file_status(std::string_view path) {
+    const uid_t uid = sys::process::uid();
+
+    // First try without doas.
+    if (const std::optional<FileInfo> info = status_of(path)) {
+        return *info;
+    }
+
+    // Try with doas.
+    const std::string target(path);
+    const bridge::Result exists = bridge::spawn_discard({"test", "-e", target});
+    if (exists.status == 0) {
+        const bridge::Result is_file = bridge::spawn_discard({"test", "-f", target});
+        if (is_file.status != 0) {
+            FileInfo info;
+            info.exists = true;
+            info.is_directory = true;
+            return info;
+        }
+
+        auto metadata = metadata_with_doas(target);
+        if (!metadata) {
+            return std::unexpected(metadata.error());
+        }
+
+        FileInfo info;
+        info.exists = true;
+        info.readable = true;                            // Assuming readable if doas can read it
+        info.writable = (metadata->second & 0200U) != 0; // User write bit
+        info.is_owned_by_user = metadata->first == uid;
+        return info;
+    }
+
+    // File doesn't exist, check directory.
+    const std::string dir = path::parent_of(path);
+    const auto dir_stat = sys::fs::stat_follow(dir);
+    if (dir_stat) {
+        const unsigned int mode = static_cast<unsigned int>(dir_stat->st_mode & 07777);
+        if (dir_stat->st_uid == uid) {
+            return std::unexpected(error_of(Err::kOwnDir, path));
+        }
+        if ((mode & 0222U) != 0 && dir_stat->st_uid == uid) {
+            return std::unexpected(error_of(Err::kWritableDir, path));
+        }
+    } else {
+        const bridge::Result dir_exists = bridge::spawn_discard({"test", "-d", dir});
+        if (dir_exists.status != 0) {
+            return std::unexpected(error_of(Err::kNoDirectory, dir));
+        }
+    }
+
+    return FileInfo{};
+}
+
+sys::Status
 process_file(std::string_view file_path, std::string_view editor, std::string_view tmp_dir) {
     // Check if path is a directory (ends with /).
     if (path::is_directory_path(file_path)) {
-        return cannot_edit_directory(file_path);
+        return std::unexpected(error_of(Err::kCannotEditDir, file_path));
     }
 
-    std::string tmp_file;
-    std::string tmp_copy;
-    {
-        const std::optional<std::string> filename = path::file_name_of(file_path);
-        if (!filename) {
-            return invalid_editor(kInvalidFilePath);
-        }
+    if (!path::file_name_of(file_path)) {
+        return std::unexpected(error_of(Err::kInvalidPath));
     }
 
-    const StatusResult status = check_file_status(file_path);
-    if (!status.error.empty()) {
-        return status.error;
+    const auto status = check_file_status(file_path);
+    if (!status) {
+        return std::unexpected(status.error());
     }
-    const FileInfo info = status.info;
+    const FileInfo info = *status;
 
-    const std::string create_error =
-        create_secure_temp_copy(file_path, tmp_dir, tmp_file, tmp_copy);
-    if (!create_error.empty()) {
-        return create_error;
+    const auto paths = create_secure_temp_copy(file_path, tmp_dir);
+    if (!paths) {
+        return std::unexpected(paths.error());
     }
+    const std::string& tmp_file = paths->first;
+    const std::string& tmp_copy = paths->second;
 
     if (info.exists) {
         if (info.is_owned_by_user) {
-            return cannot_edit_own_file(file_path);
+            return std::unexpected(error_of(Err::kOwnFile, file_path));
         }
         if (info.is_directory) {
-            return not_regular_file(file_path);
+            return std::unexpected(error_of(Err::kNotRegular, file_path));
         }
         if (info.readable && info.writable) {
-            return cannot_edit_readable_writable_file(file_path);
+            return std::unexpected(error_of(Err::kReadableWritable, file_path));
         }
 
-        const bool use_doas = !info.readable;
-        const std::string copy_error =
-            copy_original_content(std::string(file_path), tmp_file, use_doas);
-        if (!copy_error.empty()) {
-            return copy_error;
+        if (sys::Status copied =
+                copy_original_content(std::string(file_path), tmp_file, !info.readable);
+            !copied) {
+            return copied;
         }
 
-        const std::string comparison_error = create_comparison_copy(tmp_file, tmp_copy);
-        if (!comparison_error.empty()) {
-            return comparison_error;
+        if (sys::Status copied = create_comparison_copy(tmp_file, tmp_copy); !copied) {
+            return copied;
         }
     }
 
-    const std::string editor_error = run_editor(std::string(editor), tmp_file);
-    if (!editor_error.empty()) {
-        return editor_error;
+    if (sys::Status edited = run_editor(std::string(editor), tmp_file); !edited) {
+        return edited;
     }
 
     if (is_doas_config_file(file_path)) {
-        const std::string validation_error = validate_doas_config(tmp_file, std::string(editor));
-        if (!validation_error.empty()) {
-            return validation_error;
+        if (sys::Status validated = validate_doas_config(tmp_file, std::string(editor));
+            !validated) {
+            return validated;
         }
     }
 
-    std::string match_error;
-    const std::optional<bool> same = files_match(tmp_file, tmp_copy, match_error);
+    const auto same = files_match(tmp_file, tmp_copy);
     if (!same) {
-        return match_error;
+        return std::unexpected(same.error());
     }
     if (!*same) {
         return write_file_back(tmp_file, std::string(file_path), info.writable);
@@ -649,25 +645,25 @@ int main(int argc, char* const argv[]) {
     // The dispatcher dropped the effective uid, so this is the real user id:
     // "running as root" means the invoking user really is root.
     if (sys::process::euid() == 0) {
-        sys::err_out("doasedit: using this program as root is not permitted\n");
+        sys::err_out(std::format("doasedit: {}\n", prose(error_of(Err::kRootUser))));
         return 1;
     }
 
     const std::string editor = get_editor_command();
 
-    const auto tmp_dir = sys::fs::make_temp_dir();
+    auto tmp_dir = sys::fs::make_temp_dir();
     if (!tmp_dir) {
-        sys::err_out(std::format("doasedit: Error creating temporary directory: {}\n",
-                                 rust_io_msg(tmp_dir.error())));
+        sys::err_out(std::format("doasedit: {}\n",
+                                 prose(error_of(Err::kTempDirectory, prose(tmp_dir.error())))));
         return 1;
     }
 
     for (const std::string& file : parsed.files) {
-        const std::string error = process_file(file, editor, *tmp_dir);
-        if (!error.empty()) {
+        const sys::Status status = process_file(file, editor, *tmp_dir);
+        if (!status) {
             // Like Rust's process::exit(1): the temporary directory is not
             // removed on this path.
-            sys::err_out(std::format("doasedit: {}\n", error));
+            sys::err_out(std::format("doasedit: {}\n", prose(status.error())));
             return 1;
         }
     }

@@ -1,7 +1,8 @@
 #include "sys/users.hpp"
 
 #include <cerrno>
-#include <climits> // IWYU pragma: keep
+#include <climits>
+#include <crypt.h>
 #include <cstring>
 #include <grp.h>
 #include <pwd.h>
@@ -11,34 +12,28 @@
 
 namespace {
 
-std::error_code make_error(int value) {
-    return value == 0 ? std::error_code{} : std::error_code(value, std::generic_category());
-}
-
-sys::PasswdEntry copy_passwd(const struct passwd& pw) {
+sys::PasswdEntry copy_passwd(const struct passwd& user) {
     sys::PasswdEntry entry;
-    if (pw.pw_name != nullptr) {
-        entry.name = pw.pw_name;
+    if (user.pw_name != nullptr) {
+        entry.name = user.pw_name;
     }
-    if (pw.pw_passwd != nullptr) {
-        entry.passwd = pw.pw_passwd;
+    if (user.pw_passwd != nullptr) {
+        entry.passwd = user.pw_passwd;
     }
-    if (pw.pw_dir != nullptr) {
-        entry.dir = pw.pw_dir;
+    if (user.pw_dir != nullptr) {
+        entry.dir = user.pw_dir;
     }
-    if (pw.pw_shell != nullptr) {
-        entry.shell = pw.pw_shell;
+    if (user.pw_shell != nullptr) {
+        entry.shell = user.pw_shell;
     }
-    entry.uid = pw.pw_uid;
-    entry.gid = pw.pw_gid;
+    entry.uid = user.pw_uid;
+    entry.gid = user.pw_gid;
     return entry;
 }
 
 // Grows the scratch buffer on ERANGE, exactly like mygetpwuid_r() from doas.c.
 template <typename Lookup>
-sys::PwResult lookup_pw(Lookup lookup) {
-    sys::PwResult result;
-
+sys::Result<sys::PasswdEntry> lookup_pw(Lookup lookup) {
     static long pwsz = 0;
     if (pwsz == 0) {
         pwsz = sysconf(_SC_GETPW_R_SIZE_MAX);
@@ -63,35 +58,32 @@ sys::PwResult lookup_pw(Lookup lookup) {
     }
 
     if (rv != 0) {
-        result.error = make_error(rv);
-        return result;
+        return std::unexpected(sys::fail_errno(rv));
     }
-    if (entry != nullptr) {
-        result.entry = copy_passwd(*entry);
+    if (entry == nullptr) {
+        return std::unexpected(sys::fail(sys::Err::kNotFound));
     }
-    return result;
+    return copy_passwd(*entry);
 }
 
 } // namespace
 
 namespace sys {
 
-PwResult pw_by_uid(uid_t uid) {
+Result<PasswdEntry> pw_by_uid(uid_t uid) {
     return lookup_pw([uid](struct passwd* pwd, char* buf, size_t len, struct passwd** out) {
         return getpwuid_r(uid, pwd, buf, len, out);
     });
 }
 
-PwResult pw_by_name(std::string_view name) {
+Result<PasswdEntry> pw_by_name(std::string_view name) {
     const std::string key(name);
     return lookup_pw([&key](struct passwd* pwd, char* buf, size_t len, struct passwd** out) {
         return getpwnam_r(key.c_str(), pwd, buf, len, out);
     });
 }
 
-GrResult gr_by_name(std::string_view name) {
-    GrResult result;
-
+Result<GroupEntry> gr_by_name(std::string_view name) {
     long grsz = sysconf(_SC_GETGR_R_SIZE_MAX);
     size_t buflen = grsz > 0 ? static_cast<size_t>(grsz) : 1024;
     std::vector<char> buf(buflen);
@@ -113,23 +105,20 @@ GrResult gr_by_name(std::string_view name) {
     }
 
     if (rv != 0) {
-        result.error = make_error(rv);
-        return result;
+        return std::unexpected(fail_errno(rv));
     }
-    if (entry != nullptr) {
-        GroupEntry found;
-        if (entry->gr_name != nullptr) {
-            found.name = entry->gr_name;
-        }
-        found.gid = entry->gr_gid;
-        result.entry = std::move(found);
+    if (entry == nullptr) {
+        return std::unexpected(fail(Err::kNotFound));
     }
-    return result;
+    GroupEntry found;
+    if (entry->gr_name != nullptr) {
+        found.name = entry->gr_name;
+    }
+    found.gid = entry->gr_gid;
+    return found;
 }
 
-ShadowResult shadow_hash(std::string_view name) {
-    ShadowResult result;
-
+Result<std::string> shadow_hash(std::string_view name) {
     long spsz = sysconf(_SC_GETPW_R_SIZE_MAX);
     size_t buflen = spsz > 0 ? static_cast<size_t>(spsz) : 1024;
     std::vector<char> buf(buflen);
@@ -151,27 +140,32 @@ ShadowResult shadow_hash(std::string_view name) {
     }
 
     if (rv != 0) {
-        result.error = make_error(rv);
-        return result;
+        return std::unexpected(fail_errno(rv));
     }
-    if (entry != nullptr && entry->sp_pwdp != nullptr) {
-        result.hash = std::string(entry->sp_pwdp);
+    if (entry == nullptr || entry->sp_pwdp == nullptr) {
+        return std::unexpected(fail(Err::kNotFound));
     }
-    return result;
+    return std::string(entry->sp_pwdp);
 }
 
-GroupsResult supplementary_groups() {
-    GroupsResult result;
+std::optional<std::string> crypt_hash(std::string_view password, std::string_view setting) {
+    const std::string pass(password);
+    const std::string salt(setting);
+    char* hashed = ::crypt(pass.c_str(), salt.c_str());
+    if (hashed == nullptr) {
+        return std::nullopt;
+    }
+    return std::string(hashed);
+}
 
+Result<std::vector<gid_t>> supplementary_groups() {
     std::vector<gid_t> groups(static_cast<size_t>(NGROUPS_MAX));
     const int count = getgroups(static_cast<int>(groups.size()), groups.data());
     if (count == -1) {
-        result.error = make_error(errno);
-        return result;
+        return std::unexpected(fail_errno(errno));
     }
     groups.resize(static_cast<size_t>(count));
-    result.groups = std::move(groups);
-    return result;
+    return groups;
 }
 
 } // namespace sys

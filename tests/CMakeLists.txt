@@ -9,6 +9,7 @@ endfunction()
 add_doas_test(t_numbers sys_core)
 add_doas_test(t_strings sys_core)
 add_doas_test(t_utf8 sys_core)
+add_doas_test(t_error sys_core)
 
 # doas core: matching and environment construction.
 add_doas_test(t_match sys_core doas_core)

@@ -36,15 +36,17 @@ namespace doas {
 
 void shadow_auth(std::string_view user, bool persist) {
 #if defined(DOAS_PERSIST)
-    std::optional<sys::fs::Fd> fd;
-    int valid = 0;
+    std::optional<doas::OpenedTimestamp> timestamp;
 
     if (persist) {
-        fd = timestamp_open(&valid, 5 * 60);
+        auto opened = doas::timestamp_open(5 * 60);
+        if (opened) {
+            timestamp = std::move(*opened);
+        }
     }
     // The original jumps straight to "good" when the timestamp is still valid,
     // i.e. it skips authentication entirely.
-    const bool already_authenticated = fd.has_value() && valid == 1;
+    const bool already_authenticated = timestamp && timestamp->valid;
 #else
     (void)persist;
 #endif
@@ -53,30 +55,28 @@ void shadow_auth(std::string_view user, bool persist) {
     if (!already_authenticated)
 #endif
     {
-        const sys::PwResult pw = sys::pw_by_name(user);
-        if (pw.error) {
-            errno = pw.error.value();
-            sys::die_errno(1, "getpwnam");
-        }
-        if (!pw.entry) {
-            // getpwnam(3) reports a missing entry without touching errno.
-            errno = 0;
-            sys::die_errno(1, "getpwnam");
+        const auto pw = sys::pw_by_name(user);
+        if (!pw) {
+            // getpwnam(3) reports a missing entry without touching errno, so the
+            // original printed "getpwnam: Success" there; an errno keeps its text.
+            sys::die(1,
+                     pw.error().is(sys::Err::kNotFound) ? sys::fail_errno(0) : pw.error(),
+                     "getpwnam");
         }
 
         // The hash is copied out of libc's static storage: crypt(3) is called
         // right afterwards and the original kept a pointer into
         // getpwnam(3)/getspnam(3) storage there.
-        std::string hash = pw.entry->passwd;
+        std::string hash = pw->passwd;
         if (hash == "x") {
-            const sys::ShadowResult sp = sys::shadow_hash(user);
-            if (!sp.hash) {
+            const auto sp = sys::shadow_hash(user);
+            if (!sp) {
                 // getspnam(3) returned NULL: the original reported this as an
                 // authentication failure (a NULL sp_pwdp would have been
                 // dereferenced).
                 sys::die(1, "Authentication failed");
             }
-            hash = *sp.hash;
+            hash = *sp;
         } else if (hash.empty() || hash[0] != '*') {
             sys::die(1, "Authentication failed");
         }
@@ -85,32 +85,31 @@ void shadow_auth(std::string_view user, bool persist) {
         const std::string challenge = password_prompt(myname, sys::process::hostname());
 
         sys::Secret rbuf(1024);
-        const std::optional<std::string_view> response =
-            sys::readpassphrase(challenge, rbuf.span(), sys::kRppRequireTty);
-        if (!response && errno == ENOTTY) {
-            sys::log(LOG_AUTHPRIV | LOG_NOTICE, std::format("tty required for {}", myname));
-            sys::die(1, "a tty is required");
-        }
+        const auto response = sys::readpassphrase(challenge, rbuf.span(), sys::kRppRequireTty);
         if (!response) {
-            sys::die_errno(1, "readpassphrase");
+            if (response.error().is(sys::Err::kNotATerminal)) {
+                sys::log(LOG_AUTHPRIV | LOG_NOTICE, std::format("tty required for {}", myname));
+                sys::die(1, "a tty is required");
+            }
+            sys::die(1, response.error(), "readpassphrase");
         }
 
-        char* encrypted = ::crypt(std::string(*response).c_str(), hash.c_str());
-        if (encrypted == nullptr) {
+        const std::optional<std::string> encrypted = sys::crypt_hash(*response, hash);
+        if (!encrypted) {
             explicit_bzero(rbuf.data(), rbuf.span().size());
             sys::die(1, "Authentication failed");
         }
         explicit_bzero(rbuf.data(), rbuf.span().size());
-        if (std::string_view(encrypted) != hash) {
+        if (*encrypted != hash) {
             sys::log(LOG_AUTHPRIV | LOG_NOTICE, std::format("failed auth for {}", myname));
             sys::die(1, "Authentication failed");
         }
     }
 
 #if defined(DOAS_PERSIST)
-    if (fd) {
-        (void)timestamp_set(fd->get(), 5 * 60);
-        fd.reset();
+    if (timestamp) {
+        (void)doas::timestamp_set(timestamp->fd, 5 * 60);
+        timestamp.reset();
     }
 #endif
 }

@@ -102,7 +102,7 @@ RespPtr pam_prompt(const char* msg, bool echo_on, int& ret) {
     }
 
     sys::Secret buf(PAM_MAX_RESP_SIZE);
-    const std::optional<std::string_view> pass = sys::readpassphrase(prompt, buf.span(), flags);
+    const auto pass = sys::readpassphrase(prompt, buf.span(), flags);
 
     RespPtr response;
     if (!pass) {
@@ -191,11 +191,13 @@ void pam_cleanup(int ret, bool sess, bool cred) {
 
 void watch_session(pid_t child, bool sess, bool cred) {
     struct sigaction oldact{};
+    // Declared before the first goto so that jumping to "close" stays legal.
+    sys::Result<struct sigaction> term = std::unexpected(sys::fail_errno(0));
     int status = 1;
 
-    const sys::process::MaskResult masked = sys::process::block_all_signals();
-    if (masked.error) {
-        sys::warn_errno("failed to block signals");
+    const auto masked = sys::process::block_all_signals();
+    if (!masked) {
+        sys::warn(masked.error(), "failed to block signals");
         g_caught_signal = 1;
         goto close;
     }
@@ -209,30 +211,34 @@ void watch_session(pid_t child, bool sess, bool cred) {
         const bool add_failed = ::sigaddset(&sigs, SIGTERM) != 0 ||
                                 ::sigaddset(&sigs, SIGALRM) != 0 ||
                                 ::sigaddset(&sigs, SIGTSTP) != 0;
-        sys::process::SigActionResult term;
         if (!add_failed) {
             term = sys::process::install_handler(SIGTERM, catch_signal);
         }
-        if (add_failed || term.error || sys::process::unblock_signals(sigs)) {
-            sys::warn_errno("failed to set signal handler");
+        if (add_failed || !term) {
+            // sigaddset(3) reports EINVAL through errno; sigaction(3) through the
+            // error code. Both print the same diagnostic in the original.
+            sys::warn(add_failed ? sys::fail_errno(errno) : term.error(),
+                      "failed to set signal handler");
             g_caught_signal = 1;
             goto close;
         }
-        oldact = term.previous;
+        if (sys::Status unblocked = sys::process::unblock_signals(sigs); !unblocked) {
+            sys::warn(unblocked.error(), "failed to set signal handler");
+            g_caught_signal = 1;
+            goto close;
+        }
+        oldact = *term;
     }
 
     // wait for child to be terminated
     {
-        const sys::process::WaitResult waited = sys::process::wait_for(child);
-        if (!waited.error) {
-            status = waited.status;
-            if (WIFSIGNALED(status)) {
+        const auto waited = sys::process::wait_for(child);
+        if (waited) {
+            status = waited->shell_code();
+            if (waited->signaled()) {
                 sys::err_out(std::format("{}{}\n",
-                                         strsignal(WTERMSIG(status)),
-                                         WCOREDUMP(status) ? " (core dumped)" : ""));
-                status = WTERMSIG(status) + 128;
-            } else {
-                status = WEXITSTATUS(status);
+                                         strsignal(waited->term_signal()),
+                                         waited->core_dumped() ? " (core dumped)" : ""));
             }
         } else if (g_caught_signal != 0) {
             status = g_caught_signal + 128;
@@ -278,8 +284,7 @@ void pamauth(std::string_view target_user,
     static const struct pam_conv conv = {pam_conversation, nullptr};
 
 #if defined(DOAS_PERSIST)
-    std::optional<sys::fs::Fd> fd;
-    int valid = 0;
+    std::optional<doas::OpenedTimestamp> timestamp;
 #else
     (void)persist;
 #endif
@@ -298,8 +303,10 @@ void pamauth(std::string_view target_user,
 
     ret = pam_set_item(g_pam.raw(), PAM_RUSER, myname.c_str());
     if (ret != PAM_SUCCESS) {
-        sys::warn_errno(std::format(
-            "pam_set_item(?, PAM_RUSER, \"{}\"): {}", pam_strerror(g_pam.raw(), ret), myname));
+        sys::warn(sys::fail_errno(errno),
+                  std::format("pam_set_item(?, PAM_RUSER, \"{}\"): {}",
+                              pam_strerror(g_pam.raw(), ret),
+                              myname));
     }
 
     if (sys::is_a_tty(0)) {
@@ -307,9 +314,10 @@ void pamauth(std::string_view target_user,
         if (ttydev) {
             ret = pam_set_item(g_pam.raw(), PAM_TTY, ttydev->c_str());
             if (ret != PAM_SUCCESS) {
-                sys::warn_errno(std::format("pam_set_item(?, PAM_TTY, \"{}\"): {}",
-                                            *ttydev,
-                                            pam_strerror(g_pam.raw(), ret)));
+                sys::warn(sys::fail_errno(errno),
+                          std::format("pam_set_item(?, PAM_TTY, \"{}\"): {}",
+                                      *ttydev,
+                                      pam_strerror(g_pam.raw(), ret)));
             }
         }
     }
@@ -319,9 +327,12 @@ void pamauth(std::string_view target_user,
 
 #if defined(DOAS_PERSIST)
     if (persist) {
-        fd = timestamp_open(&valid, 5 * 60);
+        auto opened = doas::timestamp_open(5 * 60);
+        if (opened) {
+            timestamp = std::move(*opened);
+        }
     }
-    if (fd && valid == 1) {
+    if (timestamp && timestamp->valid) {
         nopass = true;
     }
 #endif
@@ -357,14 +368,17 @@ void pamauth(std::string_view target_user,
     // set PAM_USER to the user we want to be
     ret = pam_set_item(g_pam.raw(), PAM_USER, target.c_str());
     if (ret != PAM_SUCCESS) {
-        sys::warn_errno(std::format(
-            "pam_set_item(?, PAM_USER, \"{}\"): {}", target, pam_strerror(g_pam.raw(), ret)));
+        sys::warn(sys::fail_errno(errno),
+                  std::format("pam_set_item(?, PAM_USER, \"{}\"): {}",
+                              target,
+                              pam_strerror(g_pam.raw(), ret)));
     }
 
     ret = pam_setcred(g_pam.raw(), PAM_REINITIALIZE_CRED);
     if (ret != PAM_SUCCESS) {
-        sys::warn_errno(std::format("pam_setcred(?, PAM_REINITIALIZE_CRED): {}",
-                                    pam_strerror(g_pam.raw(), ret)));
+        sys::warn(sys::fail_errno(errno),
+                  std::format("pam_setcred(?, PAM_REINITIALIZE_CRED): {}",
+                              pam_strerror(g_pam.raw(), ret)));
     } else {
         cred = true;
     }
@@ -376,24 +390,24 @@ void pamauth(std::string_view target_user,
     }
     sess = true;
 
-    const std::expected<pid_t, std::error_code> child = sys::process::fork_child();
+    const auto child = sys::process::fork_child();
     if (!child) {
         pam_cleanup(PAM_ABORT, sess, cred);
-        sys::die_errno(1, "fork");
+        sys::die(1, child.error(), "fork");
     }
 
     // return as child
     if (*child == 0) {
 #if defined(DOAS_PERSIST)
-        fd.reset();
+        timestamp.reset();
 #endif
         return;
     }
 
 #if defined(DOAS_PERSIST)
-    if (fd) {
-        (void)timestamp_set(fd->get(), 5 * 60);
-        fd.reset();
+    if (timestamp) {
+        (void)doas::timestamp_set(timestamp->fd, 5 * 60);
+        timestamp.reset();
     }
 #endif
     watch_session(*child, sess, cred);

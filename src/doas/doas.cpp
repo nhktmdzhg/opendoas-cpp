@@ -76,8 +76,8 @@ std::vector<std::string> collect_args(int argc, char* const argv[], int first) {
                                uid_t uid,
                                std::span<const gid_t> groups,
                                uid_t target) {
-    if (sys::process::set_res_uid(uid, uid, uid)) {
-        sys::die_errno(1, "setresuid");
+    if (sys::Status dropped = sys::process::set_res_uid(uid, uid, uid); !dropped) {
+        sys::die(1, dropped.error(), "setresuid");
     }
 
     parse_config(confpath, false);
@@ -161,21 +161,19 @@ void replace_main(int argc, char* const argv[]) {
         usage();
     }
 
-    const sys::PwResult self_pw = sys::pw_by_uid(uid);
-    if (self_pw.error) {
-        errno = self_pw.error.value();
-        sys::die_errno(1, "getpwuid_r failed");
-    }
-    if (!self_pw.entry) {
-        sys::die(1, "no passwd entry for self");
+    auto self_pw = sys::pw_by_uid(uid);
+    if (!self_pw) {
+        if (self_pw.error().is(sys::Err::kNotFound)) {
+            sys::die(1, "no passwd entry for self");
+        }
+        sys::die(1, self_pw.error(), "getpwuid_r failed");
     }
 
-    const sys::GroupsResult groups_result = sys::supplementary_groups();
-    if (groups_result.error) {
-        errno = groups_result.error.value();
-        sys::die_errno(1, "can't get groups");
+    auto groups_result = sys::supplementary_groups();
+    if (!groups_result) {
+        sys::die(1, groups_result.error(), "can't get groups");
     }
-    std::vector<gid_t> groups = groups_result.groups;
+    std::vector<gid_t> groups = std::move(*groups_result);
     groups.push_back(sys::process::gid());
 
     // -s replaces the command with the shell from $SHELL or passwd(5).
@@ -183,7 +181,7 @@ void replace_main(int argc, char* const argv[]) {
     std::string shell;
     if (sflag) {
         const std::optional<std::string> env_shell = sys::process::get_env("SHELL");
-        shell = (!env_shell || env_shell->empty()) ? self_pw.entry->shell : *env_shell;
+        shell = (!env_shell || env_shell->empty()) ? self_pw->shell : *env_shell;
         shell_argv.push_back(shell.data());
         shell_argv.push_back(nullptr);
         cmd_argv = shell_argv.data();
@@ -218,10 +216,9 @@ void replace_main(int argc, char* const argv[]) {
     const std::vector<std::string> cmd_args = collect_args(cmd_argc, cmd_argv, 1);
     const PermitResult result = permit(ctx, cmd, cmd_args);
     if (!result.allowed || !result.rule) {
-        sys::log(
-            LOG_AUTHPRIV | LOG_NOTICE,
-            std::format("command not permitted for {}: {}", self_pw.entry->name, cmdline.view()));
-        sys::die_code(1, EPERM, "");
+        sys::log(LOG_AUTHPRIV | LOG_NOTICE,
+                 std::format("command not permitted for {}: {}", self_pw->name, cmdline.view()));
+        sys::die(1, sys::fail_errno(EPERM));
     }
     const Rule& rule = *result.rule;
 
@@ -230,54 +227,46 @@ void replace_main(int argc, char* const argv[]) {
         if (nflag) {
             sys::die(1, "Authentication required");
         }
-        shadow_auth(self_pw.entry->name, (rule.options & kPersist) != 0);
+        shadow_auth(self_pw->name, (rule.options & kPersist) != 0);
     }
 #endif
 
     const std::string formerpath = sys::process::get_env("PATH").value_or("");
 
     if (rule.cmd) {
-        if (!sys::process::set_env("PATH", kSafePath)) {
-            sys::die_errno(1, std::format("failed to set PATH '{}'", kSafePath));
+        if (sys::Status set = sys::process::set_env("PATH", kSafePath); !set) {
+            sys::die(1, set.error(), std::format("failed to set PATH '{}'", kSafePath));
         }
     }
 
-    const sys::PwResult target_pw = sys::pw_by_uid(target);
-    if (target_pw.error) {
-        errno = target_pw.error.value();
-        sys::die_errno(1, "getpwuid_r failed");
-    }
-    if (!target_pw.entry) {
-        sys::die(1, "no passwd entry for target");
+    auto target_pw = sys::pw_by_uid(target);
+    if (!target_pw) {
+        if (target_pw.error().is(sys::Err::kNotFound)) {
+            sys::die(1, "no passwd entry for target");
+        }
+        sys::die(1, target_pw.error(), "getpwuid_r failed");
     }
 
 #if defined(DOAS_HAVE_PAM)
-    pamauth(target_pw.entry->name,
-            self_pw.entry->name,
+    pamauth(target_pw->name,
+            self_pw->name,
             !nflag,
             (rule.options & kNopass) != 0,
             (rule.options & kPersist) != 0);
 #endif
 
-    const std::error_code gid_error =
-        sys::process::set_res_gid(target_pw.entry->gid, target_pw.entry->gid, target_pw.entry->gid);
-    if (gid_error) {
-        errno = gid_error.value();
-        sys::die_errno(1, "setresgid");
+    if (sys::Status gid = sys::process::set_res_gid(target_pw->gid, target_pw->gid, target_pw->gid);
+        !gid) {
+        sys::die(1, gid.error(), "setresgid");
     }
-    const std::error_code groups_error =
-        sys::process::init_groups(target_pw.entry->name, target_pw.entry->gid);
-    if (groups_error) {
-        errno = groups_error.value();
-        sys::die_errno(1, "initgroups");
+    if (sys::Status groups = sys::process::init_groups(target_pw->name, target_pw->gid); !groups) {
+        sys::die(1, groups.error(), "initgroups");
     }
-    const std::error_code uid_error = sys::process::set_res_uid(target, target, target);
-    if (uid_error) {
-        errno = uid_error.value();
-        sys::die_errno(1, "setresuid");
+    if (sys::Status uid_set = sys::process::set_res_uid(target, target, target); !uid_set) {
+        sys::die(1, uid_set.error(), "setresuid");
     }
-    if (!sys::process::set_env("PATH", kSafePath)) {
-        sys::die_errno(1, std::format("failed to set PATH '{}'", kSafePath));
+    if (sys::Status set = sys::process::set_env("PATH", kSafePath); !set) {
+        sys::die(1, set.error(), std::format("failed to set PATH '{}'", kSafePath));
     }
 
     const std::optional<std::string> cwd = sys::fs::current_dir();
@@ -286,23 +275,22 @@ void replace_main(int argc, char* const argv[]) {
     if ((rule.options & kNolog) == 0) {
         sys::log(LOG_AUTHPRIV | LOG_INFO,
                  std::format("{} ran command {} as {} from {}",
-                             self_pw.entry->name,
+                             self_pw->name,
                              cmdline.view(),
-                             target_pw.entry->name,
+                             target_pw->name,
                              cwd_text));
     }
 
-    std::vector<std::string> env_entries =
-        prepenv(rule, *self_pw.entry, *target_pw.entry, formerpath);
+    std::vector<std::string> env_entries = prepenv(rule, *self_pw, *target_pw, formerpath);
 
     // setusercontext set path for the next process, so reset it for us
     if (rule.cmd) {
-        if (!sys::process::set_env("PATH", kSafePath)) {
-            sys::die_errno(1, std::format("failed to set PATH '{}'", kSafePath));
+        if (sys::Status set = sys::process::set_env("PATH", kSafePath); !set) {
+            sys::die(1, set.error(), std::format("failed to set PATH '{}'", kSafePath));
         }
     } else {
-        if (!sys::process::set_env("PATH", formerpath)) {
-            sys::die_errno(1, std::format("failed to set PATH '{}'", formerpath));
+        if (sys::Status set = sys::process::set_env("PATH", formerpath); !set) {
+            sys::die(1, set.error(), std::format("failed to set PATH '{}'", formerpath));
         }
     }
 
@@ -320,12 +308,11 @@ void replace_main(int argc, char* const argv[]) {
     }
     exec_argv.push_back(nullptr);
 
-    const std::error_code exec_error = execvpe(cmd, exec_argv, envp);
-    if (exec_error.value() == ENOENT) {
+    const sys::Error exec_error = execvpe(cmd, exec_argv, envp);
+    if (exec_error.code == std::errc::no_such_file_or_directory) {
         sys::die(1, std::format("{}: command not found", cmd));
     }
-    errno = exec_error.value();
-    sys::die_errno(1, cmd);
+    sys::die(1, exec_error, cmd);
 }
 
 } // namespace doas

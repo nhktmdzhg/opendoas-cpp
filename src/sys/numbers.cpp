@@ -16,12 +16,9 @@ bool is_digit(char c) {
 
 namespace sys {
 
-IntResult parse_int(std::string_view s, long long minval, long long maxval) {
-    IntResult result;
-
+Result<long long> parse_int(std::string_view s, long long minval, long long maxval) {
     if (minval > maxval) {
-        result.error = IntResult::E::kInvalid;
-        return result;
+        return std::unexpected(fail(Err::kInvalidNumber));
     }
 
     size_t i = 0;
@@ -53,8 +50,7 @@ IntResult parse_int(std::string_view s, long long minval, long long maxval) {
 
     // strtonum() rejects "no digits" (numstr == ep) and trailing garbage (*ep != '\0').
     if (i == digits || i != s.size()) {
-        result.error = IntResult::E::kInvalid;
-        return result;
+        return std::unexpected(fail(Err::kInvalidNumber));
     }
 
     long long value = 0;
@@ -70,19 +66,15 @@ IntResult parse_int(std::string_view s, long long minval, long long maxval) {
 
     const bool erange = overflow;
     if ((value == std::numeric_limits<long long>::min() && erange) || value < minval) {
-        result.error = IntResult::E::kTooSmall;
-    } else if ((value == std::numeric_limits<long long>::max() && erange) || value > maxval) {
-        result.error = IntResult::E::kTooLarge;
-    } else {
-        result.value = value;
-        result.error = IntResult::E::kOk;
+        return std::unexpected(fail(Err::kTooSmall));
     }
-    return result;
+    if ((value == std::numeric_limits<long long>::max() && erange) || value > maxval) {
+        return std::unexpected(fail(Err::kTooLarge));
+    }
+    return value;
 }
 
-U64Result parse_u64(std::string_view s) {
-    U64Result result;
-
+Result<unsigned long long> parse_u64(std::string_view s) {
     size_t i = 0;
     while (i < s.size() && is_space(s[i])) {
         i++;
@@ -110,19 +102,15 @@ U64Result parse_u64(std::string_view s) {
     }
 
     if (i == digits) {
-        return result;
+        return std::unexpected(fail(Err::kInvalidNumber));
     }
     if (overflow) {
         // strtoull clamps to ULLONG_MAX and sets ERANGE; timestamp.c rejects exactly that.
-        result.value = std::numeric_limits<unsigned long long>::max();
-        result.ok = false;
-        return result;
+        return std::unexpected(fail(Err::kTooLarge));
     }
 
     // strtoull() negates the magnitude for a leading '-'.
-    result.value = negative ? (0ULL - value) : value;
-    result.ok = true;
-    return result;
+    return negative ? (0ULL - value) : value;
 }
 
 } // namespace sys

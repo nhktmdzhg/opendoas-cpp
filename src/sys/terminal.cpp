@@ -51,11 +51,9 @@ std::optional<std::string> tty_name(int fd) {
     return out;
 }
 
-std::optional<std::string_view>
-readpassphrase(std::string_view prompt, std::span<char> buf, int flags) {
+Result<std::string_view> readpassphrase(std::string_view prompt, std::span<char> buf, int flags) {
     if (buf.empty()) {
-        errno = EINVAL;
-        return std::nullopt;
+        return std::unexpected(fail_errno(EINVAL));
     }
 
     ssize_t nr = -1;
@@ -78,8 +76,7 @@ restart:
     // unless a tty is required.
     if ((flags & kRppStdin) != 0 || (input = output = ::open(kTtyPath, O_RDWR)) == -1) {
         if ((flags & kRppRequireTty) != 0) {
-            errno = ENOTTY;
-            return std::nullopt;
+            return std::unexpected(fail(Err::kNotATerminal));
         }
         input = STDIN_FILENO;
         output = STDERR_FILENO;
@@ -107,15 +104,15 @@ restart:
     }
 
     // Catch the signals that would otherwise leave the shell with echo disabled.
-    const process::SigActionResult savealrm = process::install_handler(SIGALRM, rpp_handler);
-    const process::SigActionResult savehup = process::install_handler(SIGHUP, rpp_handler);
-    const process::SigActionResult saveint = process::install_handler(SIGINT, rpp_handler);
-    const process::SigActionResult savepipe = process::install_handler(SIGPIPE, rpp_handler);
-    const process::SigActionResult savequit = process::install_handler(SIGQUIT, rpp_handler);
-    const process::SigActionResult saveterm = process::install_handler(SIGTERM, rpp_handler);
-    const process::SigActionResult savetstp = process::install_handler(SIGTSTP, rpp_handler);
-    const process::SigActionResult savettin = process::install_handler(SIGTTIN, rpp_handler);
-    const process::SigActionResult savettou = process::install_handler(SIGTTOU, rpp_handler);
+    const Result<struct sigaction> savealrm = process::install_handler(SIGALRM, rpp_handler);
+    const Result<struct sigaction> savehup = process::install_handler(SIGHUP, rpp_handler);
+    const Result<struct sigaction> saveint = process::install_handler(SIGINT, rpp_handler);
+    const Result<struct sigaction> savepipe = process::install_handler(SIGPIPE, rpp_handler);
+    const Result<struct sigaction> savequit = process::install_handler(SIGQUIT, rpp_handler);
+    const Result<struct sigaction> saveterm = process::install_handler(SIGTERM, rpp_handler);
+    const Result<struct sigaction> savetstp = process::install_handler(SIGTSTP, rpp_handler);
+    const Result<struct sigaction> savettin = process::install_handler(SIGTTIN, rpp_handler);
+    const Result<struct sigaction> savettou = process::install_handler(SIGTTOU, rpp_handler);
 
     if ((flags & kRppStdin) == 0) {
         (void)::write(output, prompt.data(), prompt.size());
@@ -166,15 +163,36 @@ restart:
         }
         g_signo[SIGTTOU] = sigttou;
     }
-    (void)process::restore_handler(SIGALRM, savealrm.previous);
-    (void)process::restore_handler(SIGHUP, savehup.previous);
-    (void)process::restore_handler(SIGINT, saveint.previous);
-    (void)process::restore_handler(SIGQUIT, savequit.previous);
-    (void)process::restore_handler(SIGPIPE, savepipe.previous);
-    (void)process::restore_handler(SIGTERM, saveterm.previous);
-    (void)process::restore_handler(SIGTSTP, savetstp.previous);
-    (void)process::restore_handler(SIGTTIN, savettin.previous);
-    (void)process::restore_handler(SIGTTOU, savettou.previous);
+    // Restore only the handlers that were installed successfully. The original
+    // restored the (uninitialised) saved action unconditionally, which is
+    // undefined behaviour when sigaction(2) had failed.
+    if (savealrm) {
+        (void)process::restore_handler(SIGALRM, *savealrm);
+    }
+    if (savehup) {
+        (void)process::restore_handler(SIGHUP, *savehup);
+    }
+    if (saveint) {
+        (void)process::restore_handler(SIGINT, *saveint);
+    }
+    if (savequit) {
+        (void)process::restore_handler(SIGQUIT, *savequit);
+    }
+    if (savepipe) {
+        (void)process::restore_handler(SIGPIPE, *savepipe);
+    }
+    if (saveterm) {
+        (void)process::restore_handler(SIGTERM, *saveterm);
+    }
+    if (savetstp) {
+        (void)process::restore_handler(SIGTSTP, *savetstp);
+    }
+    if (savettin) {
+        (void)process::restore_handler(SIGTTIN, *savettin);
+    }
+    if (savettou) {
+        (void)process::restore_handler(SIGTTOU, *savettou);
+    }
     if (input != STDIN_FILENO) {
         (void)::close(input);
     }
@@ -199,11 +217,8 @@ restart:
         goto restart;
     }
 
-    if (save_errno != 0) {
-        errno = save_errno;
-    }
     if (nr == -1) {
-        return std::nullopt;
+        return std::unexpected(fail_errno(save_errno));
     }
     return std::string_view(buf.data(), static_cast<size_t>(cursor - buf.data()));
 }

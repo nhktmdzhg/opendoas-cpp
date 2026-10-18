@@ -66,15 +66,17 @@ int main(int argc, char* const argv[]) {
 
     {
         // Setup environment
-        const sys::PwResult pw = sys::pw_by_uid(sys::process::uid());
-        if (!pw.entry) {
+        const auto pw = sys::pw_by_uid(sys::process::uid());
+        if (!pw) {
             // The original dereferenced the NULL passwd entry here.
-            sys::die(1, "no passwd entry for self");
+            sys::die(1,
+                     pw.error().is(sys::Err::kNotFound) ? sys::fail_errno(0) : pw.error(),
+                     "no passwd entry for self");
         }
         // The original ignored setenv(3) failures here as well.
-        (void)sys::process::set_env("SUDO_USER", pw.entry->name);
-        (void)sys::process::set_env("SUDO_UID", std::to_string(pw.entry->uid));
-        (void)sys::process::set_env("SUDO_GID", std::to_string(pw.entry->gid));
+        (void)sys::process::set_env("SUDO_USER", pw->name);
+        (void)sys::process::set_env("SUDO_UID", std::to_string(pw->uid));
+        (void)sys::process::set_env("SUDO_GID", std::to_string(pw->gid));
     }
 
     std::vector<std::string> args;

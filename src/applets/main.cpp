@@ -42,10 +42,8 @@ void drop_effective_privileges() {
         // Not installed setuid: there is nothing to drop.
         return;
     }
-    const std::error_code error = sys::process::set_res_uid(real, real, 0);
-    if (error) {
-        errno = error.value();
-        sys::die_errno(1, "setresuid");
+    if (sys::Status dropped = sys::process::set_res_uid(real, real, 0); !dropped) {
+        sys::die(1, dropped.error(), "setresuid");
     }
 }
 

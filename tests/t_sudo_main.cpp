@@ -115,8 +115,8 @@ int main() {
             return std::string(made);
         }();
         const std::string fake_doas = dir + "/doas";
-        CHECK(!sys::fs::write_file(fake_doas, "#!/bin/sh\n"));
-        CHECK(!sys::fs::chmod_path(fake_doas, 0755));
+        CHECK(sys::fs::write_file(fake_doas, "#!/bin/sh\n").has_value());
+        CHECK(sys::fs::chmod_path(fake_doas, 0755).has_value());
 
         const std::string path_env = "PATH=" + dir;
         const Outcome outcome = run_sudo({kSudoApplet, "--help"}, {path_env});

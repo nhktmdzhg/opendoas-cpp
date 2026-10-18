@@ -1,6 +1,8 @@
 #ifndef DOAS_SYS_TERMINAL_HPP
 #define DOAS_SYS_TERMINAL_HPP
 
+#include "sys/error.hpp"
+
 #include <optional>
 #include <span>
 #include <string>
@@ -26,8 +28,8 @@ bool is_a_tty(int fd);
 std::optional<std::string> tty_name(int fd);
 
 // Port of libopenbsd/readpassphrase.c. The passphrase is stored inside buf,
-// which must outlive the returned view. nullopt means failure with errno set.
-std::optional<std::string_view>
+// which must outlive the returned view.
+[[nodiscard]] Result<std::string_view>
 readpassphrase(std::string_view prompt, std::span<char> buf, int flags);
 
 } // namespace sys

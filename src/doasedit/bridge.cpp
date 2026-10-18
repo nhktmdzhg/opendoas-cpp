@@ -39,7 +39,7 @@ Result run(std::initializer_list<std::string_view> argv, bool capture) {
     // again, so everything pending is written out here.
     sys::flush_all();
 
-    const std::expected<pid_t, std::error_code> child = sys::process::fork_child();
+    const auto child = sys::process::fork_child();
     if (!child) {
         return result;
     }
@@ -96,16 +96,12 @@ Result run(std::initializer_list<std::string_view> argv, bool capture) {
         pipe->first.reset();
     }
 
-    const sys::process::WaitResult waited = sys::process::wait_for(*child);
-    if (waited.error) {
+    const auto waited = sys::process::wait_for(*child);
+    if (!waited || waited->signaled()) {
         result.status = 1;
         return result;
     }
-    if (WIFSIGNALED(waited.status)) {
-        result.status = 1;
-        return result;
-    }
-    result.status = WEXITSTATUS(waited.status);
+    result.status = waited->exit_code();
     return result;
 }
 

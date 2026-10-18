@@ -3,17 +3,23 @@
 
 #if defined(DOAS_PERSIST)
 
+#include "sys/error.hpp"
 #include "sys/fs.hpp"
-
-#include <optional>
 
 namespace doas {
 
-// Ports of timestamp.c. They return -1/0 like the original functions and emit
-// their diagnostics themselves.
-[[nodiscard]] std::optional<sys::fs::Fd> timestamp_open(int* valid, int secs);
-[[nodiscard]] int timestamp_set(int fd, int secs);
-[[nodiscard]] int timestamp_clear();
+// A freshly opened timestamp file. valid is true when the timestamp inside was
+// still usable, which lets the caller skip authentication entirely.
+struct OpenedTimestamp {
+    sys::fs::Fd fd;
+    bool valid = false;
+};
+
+// Ports of timestamp.c. Failures carry the reason instead of 0/-1, so callers do
+// not have to inspect errno; the module still emits the same diagnostics.
+[[nodiscard]] sys::Result<OpenedTimestamp> timestamp_open(int secs);
+[[nodiscard]] sys::Status timestamp_set(const sys::fs::Fd& fd, int secs);
+[[nodiscard]] sys::Status timestamp_clear();
 
 } // namespace doas
 

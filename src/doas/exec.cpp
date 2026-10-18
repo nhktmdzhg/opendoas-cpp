@@ -80,14 +80,14 @@ bool exec_with_retry_rules(char* path,
 
 } // namespace
 
-std::error_code
+sys::Error
 execvpe(std::string_view name, std::span<char* const> argv, std::span<char* const> envp) {
     bool eacces = false;
     std::error_code last_error;
 
     // Do not allow null name.
     if (name.empty()) {
-        return make_error(ENOENT);
+        return sys::fail_errno(ENOENT);
     }
 
     const std::string file(name);
@@ -98,9 +98,9 @@ execvpe(std::string_view name, std::span<char* const> argv, std::span<char* cons
         direct.push_back('\0');
         (void)exec_with_retry_rules(direct.data(), argv, envp, eacces, last_error);
         if (eacces) {
-            return make_error(EACCES);
+            return sys::fail_errno(EACCES);
         }
-        return last_error;
+        return sys::Error{last_error, {}};
     }
 
     // Get the path we're searching.
@@ -153,12 +153,12 @@ execvpe(std::string_view name, std::span<char* const> argv, std::span<char* cons
     }
 
     if (eacces) {
-        return make_error(EACCES);
+        return sys::fail_errno(EACCES);
     }
     if (!last_error) {
-        return make_error(ENOENT);
+        return sys::fail_errno(ENOENT);
     }
-    return last_error;
+    return sys::Error{last_error, {}};
 }
 
 } // namespace doas
