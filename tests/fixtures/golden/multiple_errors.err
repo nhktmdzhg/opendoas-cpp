@@ -1,0 +1,2 @@
+doas: can't combine nopass and persist at line 1
+doas: can't have two setenv sections at line 2

@@ -1,0 +1,126 @@
+.TH "sudo" "1"
+.SH "NAME"
+.PP
+sudo \- translate sudo commands to doas
+.SH "SYNOPSIS"
+.PP
+\fBsudo\fP [sudo flags] command [args]
+.SH "DESCRIPTION"
+.PP
+\fBsudo\fP translates a command line written for \fIsudo\fP into a \fIdoas\fP
+command line and runs it. It is one applet of the \fIdoas\-common\fP multicall
+binary and lives next to the \fIdoas\fP and \fIdoasedit\fP applets as a symbolic
+link.
+.PP
+The \fIdoas\fP applet runs in the same process; the effective uid that the
+setuid installation grants is dropped while the command line is translated and
+raised again before \fIdoas\fP takes over, so the privileges in effect are the
+same as when a separate \fIdoas\fP binary was executed.
+.PP
+Because the sudo feature set is larger than the doas one, most sudo commands
+cannot be converted into an exact doas command. For example, sudo has a flag
+\fB--preserve-env\fP with no doas equivalent, but the \fIdoas.conf\fP options
+\fBkeepenv\fP and \fBsetenv\fP can produce a similar effect. The aim is to make
+replacing \fIsudo\fP with \fIdoas\fP possible on systems whose scripts rely on
+sudo specific behaviour: as many flags as possible are translated, the rest are
+ignored and left to \fIdoas.conf\fP.
+.PP
+Flags that follow the argument \fB--\fP are passed to \fIdoas\fP unchanged.
+.SH "FLAG TRANSLATION"
+.PP
+Each valid sudo flag is either ignored, translated to a doas flag, or causes
+\fBsudo\fP to exit.
+.TS
+center,box;
+l l l .
+sudo	doas	action
+_
+\-A		IGNORE
+\-\-askpass		IGNORE
+\-B		IGNORE
+\-\-bell		IGNORE
+\-b	\-n	PASS
+\-\-background	\-n	PASS
+\-C		IGNORE
+\-\-close\-from=		IGNORE
+\-D		IGNORE
+\-\-chdir=		IGNORE
+\-E		IGNORE
+\-\-preserve\-env		IGNORE
+\-\-preserve\-env=		IGNORE
+\-e		EXIT
+\-\-edit		EXIT
+\-g		IGNORE
+\-\-group=		IGNORE
+\-H		IGNORE
+\-\-set\-home		IGNORE
+\-\-help		IGNORE
+\-h		IGNORE
+\-\-host=		IGNORE
+\-i	\-s	PASS
+\-K		IGNORE
+\-\-remove\-timestamp		IGNORE
+\-k		IGNORE
+\-\-reset\-timestamp		IGNORE
+\-l		IGNORE
+\-\-list		IGNORE
+\-N		IGNORE
+\-\-no\-update		IGNORE
+\-n	\-n	PASS
+\-\-non\-interactive	\-n	PASS
+\-P		IGNORE
+\-\-preserve\-groups		IGNORE
+\-p		IGNORE
+\-\-prompt=		IGNORE
+\-R		IGNORE
+\-\-chroot=		IGNORE
+\-S		IGNORE
+\-\-stdin		IGNORE
+\-s	\-s	PASS
+\-\-shell	\-s	PASS
+\-U		IGNORE
+\-\-other\-user=		IGNORE
+\-T		IGNORE
+\-\-command\-timeout=		IGNORE
+\-u	\-u	PASS
+\-\-user=	\-u	PASS
+\-V		IGNORE
+\-\-version		IGNORE
+\-v		IGNORE
+\-\-validate		IGNORE
+.TE
+.SH "ENVIRONMENT"
+.PP
+The variables \fISUDO_USER\fP, \fISUDO_UID\fP and \fISUDO_GID\fP are exported
+before \fIdoas\fP runs. Scripts that rely on them need matching \fIdoas.conf\fP
+rules, for example:
+.RS
+.nf
+permit setenv { SUDO_USER SUDO_UID SUDO_GID } user as root
+.fi
+.RE
+.PP
+By default \fBsudo\fP echoes the received sudo command line and the translated
+doas command line to standard error:
+.RS
+.nf
+$ sudo whoami
+sudo <<< sudo whoami
+sudo >>> /usr/bin/doas whoami
+root
+
+.fi
+.RE
+.PP
+Setting \fISUDO_HIDE\fP (to any value, including the empty string) disables this
+trace.
+.SH "EXIT STATUS"
+.PP
+The exit status of the command run through \fIdoas\fP, or 1 when the translation
+leads to a \fIdoas\fP error. When no \fIdoas\fP binary is found in
+\fIPATH\fP the applet prints a message and exits 255. The \fB-e\fP and
+\fB--edit\fP flags exit successfully without running anything.
+.SH "SEE ALSO"
+.BR doas (1),
+.BR doas.conf (5),
+.BR doasedit (1)

@@ -1,0 +1,95 @@
+.Dd December 15, 2025
+.Dt DOASEDIT 1
+.Os
+.Sh NAME
+.Nm doasedit
+.Nd edit files with elevated privileges using a regular user's editor
+.Sh SYNOPSIS
+.Nm doasedit
+.Op Fl h | Fl -help
+.Op Fl V | Fl -version
+.Ar file ...
+.Sh DESCRIPTION
+The
+.Nm
+utility allows a user to edit files that require root privileges while using a
+non-privileged editor. It provides a secure environment for editing system
+configuration files without running the editor itself with elevated privileges.
+.Pp
+.Nm
+works by creating a temporary copy of the target file with secure permissions,
+opening it with the user's preferred editor, and then replacing the original file
+with the edited version if changes were made.
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl h , Fl -help
+Display help message and exit.
+.It Fl V , Fl -version
+Display version information and exit.
+.El
+.Sh ENVIRONMENT
+The following environment variables affect the execution of
+.Nm :
+.Bl -tag -width "DOAS_EDITOR"
+.It Ev DOAS_EDITOR
+Preferred editor command. If set, this is used instead of
+.Ev VISUAL
+or
+.Ev EDITOR .
+.It Ev VISUAL
+Preferred editor for interactive sessions. Used if
+.Ev DOAS_EDITOR
+is not set.
+.It Ev EDITOR
+Default editor. Used if neither
+.Ev DOAS_EDITOR
+nor
+.Ev VISUAL
+are set.
+.El
+.Sh SECURITY CONSIDERATIONS
+.Nm
+implements several security measures to prevent privilege escalation:
+.Bl -bullet
+.It
+Cannot be run as root user.
+.It
+Will not edit files owned by current user.
+.It
+Will not create files in directories owned by current user.
+.It
+Will not create files in directories writable by non-root users.
+.It
+Validates configuration files before installation.
+.El
+.Sh EXAMPLES
+Edit system hosts file:
+.Dl $ doasedit /etc/hosts
+.Pp
+Edit multiple configuration files:
+.Dl $ doasedit /etc/fstab /etc/securetty
+.Pp
+Edit a doas configuration file (will be validated before saving):
+.Dl $ doasedit /etc/doas.conf
+.Sh DIAGNOSTICS
+.Nm
+exits with one of the following values:
+.Bl -tag -width Ds
+.It 0
+Success.
+.It 1
+General error.
+.El
+.Sh SEE ALSO
+.Xr doas 8 ,
+.Xr doas.conf 5 ,
+.Xr vi 1
+.Sh HISTORY
+This implementation in Rust was written to provide a secure and efficient tool
+for editing files requiring elevated privileges without compromising system security.
+.Sh AUTHORS
+.An -nosplit
+The
+.Nm
+utility was written by
+.An "Nguyen Hoang Ky" Aq Mt "nhktmdzhg at google mail" .

@@ -1,7 +1,7 @@
-doas
-
-parse.c
-version.h
+build/
+CMakeUserPresets.json
+CMakePresets.json
+compile_commands.json
 
 *.a
 *.d
@@ -9,6 +9,3 @@ version.h
 
 *.swp
 *.swo
-
-config.mk
-config.h

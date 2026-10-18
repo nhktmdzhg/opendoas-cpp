@@ -1,0 +1,5 @@
+add_subdirectory(sys)
+add_subdirectory(doas)
+add_subdirectory(doasedit)
+add_subdirectory(sudo)
+add_subdirectory(applets)

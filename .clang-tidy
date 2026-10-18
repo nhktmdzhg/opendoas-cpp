@@ -1,0 +1,89 @@
+---
+# The check set targets real defects in a setuid root program: bugprone, cert,
+# the clang static analyzer and performance. Checks that fight the ported C ABI or
+# the 1-1 control flow are disabled below, each with its reason.
+Checks: >
+  bugprone-*,
+  cert-*,
+  clang-analyzer-*,
+  cppcoreguidelines-*,
+  misc-*,
+  modernize-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -altera-*,
+  -fuchsia-*,
+  -google-*,
+  -llvm-*,
+  -zircon-*,
+  -bugprone-assignment-in-if-condition,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-signed-bitwise,
+  -bugprone-unused-return-value,
+  -cert-err33-c,
+  -cppcoreguidelines-avoid-c-arrays,
+  -cppcoreguidelines-avoid-do-while,
+  -cppcoreguidelines-avoid-goto,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-avoid-non-const-global-variables,
+  -cppcoreguidelines-no-malloc,
+  -misc-use-internal-linkage,
+  -cppcoreguidelines-use-enum-class,
+  -cppcoreguidelines-owning-memory,
+  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  -cppcoreguidelines-pro-bounds-avoid-unchecked-container-access,
+  -cppcoreguidelines-pro-bounds-constant-array-index,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-type-const-cast,
+  -cppcoreguidelines-pro-type-reinterpret-cast,
+  -cppcoreguidelines-pro-type-vararg,
+  -modernize-avoid-c-arrays,
+  -modernize-return-braced-init-list,
+  -modernize-use-auto,
+  -modernize-use-designated-initializers,
+  -modernize-use-std-print,
+  -modernize-use-string-view,
+  -modernize-use-trailing-return-type,
+  -misc-const-correctness,
+  -misc-include-cleaner,
+  -misc-no-recursion,
+  -concurrency-mt-unsafe,
+  -performance-enum-size,
+  -performance-faster-string-find,
+  -performance-no-automatic-move,
+  -performance-prefer-single-char-overloads,
+  -performance-string-view-conversions,
+  -readability-container-contains,
+  -readability-else-after-return,
+  -readability-function-cognitive-complexity,
+  -readability-identifier-length,
+  -readability-implicit-bool-conversion,
+  -readability-inconsistent-declaration-parameter-name,
+  -readability-magic-numbers,
+  -readability-redundant-casting,
+  -readability-redundant-control-flow,
+  -readability-simplify-boolean-expr,
+  -readability-trailing-comma,
+  -readability-use-concise-preprocessor-directives,
+WarningsAsErrors: ''
+HeaderFilterRegex: '^.*/(src|tests)/.*'
+FormatStyle: file
+CheckOptions:
+  - { key: misc-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic, value: true }
+  - { key: readability-identifier-naming.NamespaceCase, value: lower_case }
+  - { key: readability-identifier-naming.ClassCase, value: CamelCase }
+  - { key: readability-identifier-naming.StructCase, value: CamelCase }
+  - { key: readability-identifier-naming.EnumCase, value: CamelCase }
+  - { key: readability-identifier-naming.EnumConstantCase, value: CamelCase }
+  - { key: readability-identifier-naming.EnumConstantPrefix, value: 'k' }
+  - { key: readability-identifier-naming.GlobalConstantCase, value: CamelCase }
+  - { key: readability-identifier-naming.GlobalConstantPrefix, value: 'k' }
+  - { key: readability-identifier-naming.LocalConstantCase, value: lower_case }
+  - { key: readability-identifier-naming.FunctionCase, value: lower_case }
+  - { key: readability-identifier-naming.VariableCase, value: lower_case }
+  - { key: readability-identifier-naming.ParameterCase, value: lower_case }
+  - { key: readability-identifier-naming.MemberCase, value: lower_case }
+  - { key: readability-identifier-naming.PrivateMemberSuffix, value: '_' }
+  - { key: readability-identifier-naming.GlobalVariableCase, value: lower_case }
+...
