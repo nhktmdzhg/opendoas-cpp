@@ -1,0 +1,36 @@
+Attribution and third-party notices
+===================================
+
+This project as a whole is distributed under the MIT license; see LICENSE.
+
+Parts of it are ports of the projects below. Their copyright notices are
+retained here, and the license text each one requires travels with the
+distribution in LICENSES/. License headers are deliberately not repeated inside
+the source files.
+
+OpenDoas / OpenBSD doas — ISC
+-----------------------------
+Files: src/doas/*, src/sys/*, man/doas.1, man/doas.conf.5, pam.d__doas__linux
+
+  Copyright (c) 2015 Ted Unangst <tedu@openbsd.org>
+  Copyright (c) 2015 Nathan Holstein <nathan.holstein@gmail.com>
+  Copyright (c) 2016 Duncan Overbruck <mail@duncano.de>
+  Copyright (c) 2020 Duncan Overbruck <mail@duncano.de>
+
+License text: LICENSES/ISC.txt
+
+fudo — BSD-2-Clause
+-------------------
+Files: src/sudo/*
+
+  Copyright 2023 Paco Pascal
+
+License text: LICENSES/BSD-2-Clause.txt
+
+doasedit — MIT
+--------------
+Files: src/doasedit/*
+
+  Copyright (c) 2025 Nguyen Hoang Ky
+
+License text: LICENSE (MIT)

@@ -97,15 +97,6 @@ rules, for example:
 .RS
 .nf
 permit setenv { SUDO_USER SUDO_UID SUDO_GID } user as root
-.fi
-.RE
-.PP
-By default \fBsudo\fP echoes the received sudo command line and the translated
-doas command line to standard error:
-.RS
-.nf
-$ sudo whoami
-root
 
 .fi
 .RE

@@ -147,7 +147,18 @@ kiến trúc và các tầng kiểm chứng ở [`architecture.md`](architecture
 
 ## Giấy phép
 
-- `src/doas/*`, `src/sys/*`: ISC/BSD, lấy từ OpenDoas/OpenBSD, giữ nguyên thông
-  báo bản quyền trong từng file.
-- `src/sudo/*`: BSD-2-Clause, copyright 2023 Paco Pascal.
-- `src/doasedit/*`: MIT, copyright 2025 Nguyen Hoang Ky.
+Dự án phát hành theo **MIT** — xem [`LICENSE`](LICENSE).
+
+Phần port từ các dự án khác giữ nguyên giấy phép gốc; thông báo bản quyền của
+từng phần nằm trong [`NOTICE`](NOTICE), toàn văn giấy phép nằm trong
+[`LICENSES/`](LICENSES):
+
+| Phần | Nguồn | Giấy phép |
+|---|---|---|
+| `src/doas/*`, `src/sys/*`, man page doas | OpenDoas / OpenBSD | ISC |
+| `src/sudo/*` | fudo | BSD-2-Clause |
+| `src/doasedit/*` | doasedit (Rust) | MIT |
+
+License header không lặp lại trong từng file nguồn; `cmake --install` cài
+`LICENSE`, `NOTICE` và `LICENSES/` vào `${DOAS_LICENSE_DIR}` (mặc định
+`share/licenses/doas-common`, packager đổi thành tên gói qua `-DDOAS_LICENSE_DIR`).

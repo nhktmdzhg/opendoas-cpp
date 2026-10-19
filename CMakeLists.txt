@@ -25,6 +25,11 @@ set(DOAS_GID_MAX "65535" CACHE STRING "Maximum gid accepted in doas.conf")
 set(DOAS_SYSCONFDIR "/etc" CACHE PATH "Directory holding doas.conf")
 set(DOAS_PAM_DIR "${DOAS_SYSCONFDIR}/pam.d" CACHE PATH "Directory for the PAM service definition")
 option(DOAS_INSTALL_SETUID "Install the multicall binary setuid root" ON)
+set(
+    DOAS_LICENSE_DIR "${CMAKE_INSTALL_DATADIR}/licenses/doas-common"
+    CACHE STRING
+        "Prefix relative directory for LICENSE, NOTICE and LICENSES/ (packagers rename it after the package)"
+)
 set(DOAS_SANITIZE "" CACHE STRING "Sanitizer list for dev builds (e.g. address,undefined)")
 
 # ---------------------------------------------------------------------------
@@ -70,6 +75,11 @@ endfunction()
 
 add_subdirectory(src)
 add_subdirectory(man)
+
+# License and attribution: the primary MIT license, the third-party notices and the
+# full text of every license they reference.
+install(FILES LICENSE NOTICE DESTINATION ${DOAS_LICENSE_DIR})
+install(DIRECTORY LICENSES DESTINATION ${DOAS_LICENSE_DIR})
 
 if(DOAS_AUTH_PROVIDER STREQUAL "PAM")
     install(
