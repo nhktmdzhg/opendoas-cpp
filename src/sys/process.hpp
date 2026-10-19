@@ -68,7 +68,7 @@ void sleep_seconds(unsigned int seconds);
 
 // getenv(3)/setenv(3): the value is copied so no pointer into environ escapes.
 // get_env() returns nullopt only when the variable is unset (an empty value
-// yields an empty string), which is what SUDO_HIDE relies on.
+// yields an empty string).
 [[nodiscard]] std::optional<std::string> get_env(std::string_view name);
 [[nodiscard]] Status set_env(std::string_view name, std::string_view value);
 

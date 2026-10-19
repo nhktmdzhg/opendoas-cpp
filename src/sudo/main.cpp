@@ -12,46 +12,6 @@
 
 namespace sudo {
 
-namespace {
-
-// show_cmd() of the original: the command is echoed to stderr unless SUDO_HIDE
-// is present in the environment (an empty value counts as present).
-bool hidden() {
-    return sys::process::get_env("SUDO_HIDE").has_value();
-}
-
-void show_cmd(std::string_view prefix, const std::vector<std::string>& args) {
-    if (hidden()) {
-        return;
-    }
-    std::string line(prefix);
-    const char* sep = "";
-    for (const std::string& arg : args) {
-        line += sep;
-        line += arg;
-        sep = " ";
-    }
-    line += "\n";
-    sys::err_out(line);
-}
-
-void show_argv(std::string_view prefix, int argc, const char* const argv[]) {
-    if (hidden()) {
-        return;
-    }
-    std::string line(prefix);
-    const char* sep = "";
-    for (int i = 0; i < argc; i++) {
-        line += sep;
-        line += argv[i];
-        sep = " ";
-    }
-    line += "\n";
-    sys::err_out(line);
-}
-
-} // namespace
-
 int main(int argc, char* const argv[]) {
     // Kept for parity with the original (which reports a missing doas binary and
     // exits with 255); the resolved path is only used for the trace output.
@@ -60,9 +20,6 @@ int main(int argc, char* const argv[]) {
         sys::err_out("doas couldn't be found on your system.\n");
         return 255;
     }
-
-    // Display the inputed sudo command
-    show_argv("sudo <<< ", argc, argv);
 
     {
         // Setup environment
@@ -89,9 +46,6 @@ int main(int argc, char* const argv[]) {
     for (const std::string& arg : translated.args) {
         args.push_back(arg);
     }
-
-    // Display the translated doas command
-    show_cmd("sudo >>> ", args);
 
     // The doas applet now runs in this very process (the original exec'd a doas
     // binary): raise the effective uid back to root from the saved set user id

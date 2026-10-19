@@ -105,15 +105,11 @@ doas command line to standard error:
 .RS
 .nf
 $ sudo whoami
-sudo <<< sudo whoami
-sudo >>> /usr/bin/doas whoami
 root
 
 .fi
 .RE
 .PP
-Setting \fISUDO_HIDE\fP (to any value, including the empty string) disables this
-trace.
 .SH "EXIT STATUS"
 .PP
 The exit status of the command run through \fIdoas\fP, or 1 when the translation

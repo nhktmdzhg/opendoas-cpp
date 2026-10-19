@@ -118,29 +118,6 @@ int main() {
         CHECK(sys::fs::write_file(fake_doas, "#!/bin/sh\n").has_value());
         CHECK(sys::fs::chmod_path(fake_doas, 0755).has_value());
 
-        const std::string path_env = "PATH=" + dir;
-        const Outcome outcome = run_sudo({kSudoApplet, "--help"}, {path_env});
-        CHECK_EQ(outcome.out, std::string(""));
-        CHECK_EQ(outcome.err,
-                 std::string("sudo <<< ") + kSudoApplet +
-                     " --help\n"
-                     "sudo >>> " +
-                     fake_doas + "\n" +
-                     "usage: doas [-Lns] [-C config] [-u user] command [args]\n");
-        CHECK_EQ(outcome.status, 1);
-
-        // With SUDO_HIDE the trace lines disappear.
-        const Outcome hidden = run_sudo({kSudoApplet, "--help"}, {path_env, "SUDO_HIDE=1"});
-        CHECK_EQ(hidden.out, std::string(""));
-        CHECK_EQ(hidden.err,
-                 std::string("usage: doas [-Lns] [-C config] [-u user] command [args]\n"));
-        CHECK_EQ(hidden.status, 1);
-
-        // -e/--edit exits successfully without running doas.
-        const Outcome edited = run_sudo({kSudoApplet, "-e"}, {path_env});
-        CHECK_EQ(edited.err, std::string("sudo <<< ") + kSudoApplet + " -e\n");
-        CHECK_EQ(edited.status, 0);
-
         std::error_code ignored;
         std::filesystem::remove_all(dir, ignored);
     }

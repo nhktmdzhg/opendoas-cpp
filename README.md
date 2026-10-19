@@ -119,8 +119,7 @@ root
 ```
 
 Cờ không dịch được thì bị bỏ qua và để `doas.conf` quyết định (bảng dịch đầy đủ
-trong `man 1 sudo`). `SUDO_USER`, `SUDO_UID`, `SUDO_GID` được export;
-`SUDO_HIDE` tắt hai dòng trace.
+trong `man 1 sudo`). `SUDO_USER`, `SUDO_UID`, `SUDO_GID` được export.
 
 ## Kiểm thử
 

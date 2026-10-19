@@ -423,8 +423,7 @@ thư mục tạm được giữ lại, còn khi thành công thì xoá — đún
   (in thông báo rồi thoát 0). `translate()` không đọc/ghi ngoài tham số, không
   thoát, không chạm hệ thống.
 - `main.cpp` — hiệu ứng phụ: `which("doas")` để lấy đường dẫn cho dòng trace
-  (không có thì thoát 255 như bản gốc), in `sudo <<< <argv gốc>` và
-  `sudo >>> <argv đã dịch>` (trừ khi `SUDO_HIDE` có trong môi trường), export
+  (không có thì thoát 255 như bản gốc), export
   `SUDO_USER`/`SUDO_UID`/`SUDO_GID`, rồi handoff sang doas in-process.
 
 Ví dụ: `sudo -b cmd` → `doas -n cmd`; `sudo -i` → `doas -s`; `sudo -l`, `sudo -v`,
