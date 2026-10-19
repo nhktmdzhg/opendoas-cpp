@@ -127,7 +127,8 @@ void replace_main(int argc, char* const argv[]) {
             break;
         case 'L':
 #if defined(DOAS_PERSIST)
-            std::exit(timestamp_clear() == -1);
+            // timestamp_clear() returned 0/-1; a failure is exit status 1.
+            std::exit(timestamp_clear() ? 0 : 1);
 #else
             std::exit(0);
 #endif

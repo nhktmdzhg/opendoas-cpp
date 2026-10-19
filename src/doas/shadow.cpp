@@ -16,6 +16,7 @@
 
 // Port of shadow.c (the shadow based authentication provider).
 #include "doas/auth.hpp"
+#include "doas/timestamp.hpp"
 #include "sys/error.hpp"
 #include "sys/process.hpp"
 #include "sys/secret.hpp"

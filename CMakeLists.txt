@@ -112,12 +112,34 @@ if(DOAS_CLANG_FORMAT)
 endif()
 
 find_program(DOAS_CLANG_TIDY NAMES clang-tidy)
+find_program(DOAS_RUN_CLANG_TIDY NAMES run-clang-tidy run-clang-tidy.py)
 if(DOAS_CLANG_TIDY)
-    add_custom_target(
-        tidy
-        COMMAND ${DOAS_CLANG_TIDY} -p ${CMAKE_BINARY_DIR} --quiet ${DOAS_SOURCES}
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        COMMENT "Running clang-tidy"
-        VERBATIM
-    )
+    include(ProcessorCount)
+    set(DOAS_TIDY_JOBS "" CACHE STRING "Parallel clang-tidy jobs (empty = every processor)")
+    if(DOAS_TIDY_JOBS STREQUAL "")
+        ProcessorCount(DOAS_TIDY_JOBS)
+        if(DOAS_TIDY_JOBS EQUAL 0)
+            set(DOAS_TIDY_JOBS 1)
+        endif()
+    endif()
+
+    if(DOAS_RUN_CLANG_TIDY)
+        add_custom_target(
+            tidy
+            COMMAND
+                ${DOAS_RUN_CLANG_TIDY} -p ${CMAKE_BINARY_DIR} -j ${DOAS_TIDY_JOBS} -quiet
+                "${CMAKE_SOURCE_DIR}/(src|tests)/.*[.](cpp|hpp)$"
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMENT "Running clang-tidy with ${DOAS_TIDY_JOBS} jobs"
+            VERBATIM
+        )
+    else()
+        add_custom_target(
+            tidy
+            COMMAND ${DOAS_CLANG_TIDY} -p ${CMAKE_BINARY_DIR} --quiet ${DOAS_SOURCES}
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMENT "Running clang-tidy (run-clang-tidy not found: single threaded)"
+            VERBATIM
+        )
+    endif()
 endif()
