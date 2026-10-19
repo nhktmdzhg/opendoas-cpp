@@ -476,7 +476,8 @@ graph TD
 - `dev`: Debug, `DOAS_SANITIZE=address,undefined`.
 - Tuỳ chọn tương ứng `./configure` của bản gốc: `DOAS_AUTH_PROVIDER` (PAM/SHADOW),
   `DOAS_PERSIST`, `DOAS_PERSIST_DIR`, `DOAS_UID_MAX`, `DOAS_GID_MAX`,
-  `DOAS_SYSCONFDIR`, `DOAS_INSTALL_SETUID`, `DOAS_TIDY_JOBS`, `DOAS_SANITIZE`.
+  `DOAS_SYSCONFDIR`, `DOAS_PAM_DIR`, `DOAS_INSTALL_SETUID`, `DOAS_TIDY_JOBS`,
+  `DOAS_SANITIZE`.
 
 Các hằng số đi vào mã qua `target_compile_definitions` (`DOAS_CONF`,
 `DOAS_UID_MAX`, `DOAS_GID_MAX`, `DOAS_PERSIST_DIR`), tương đương `config.h` của bản
@@ -492,7 +493,16 @@ libstdc++/libgcc tĩnh, libc/libpam/libcrypt động, `-Wl,--gc-sections`,
 
 `doas-common` vào `${CMAKE_INSTALL_BINDIR}` với mode `4755` (đổi bằng
 `DOAS_INSTALL_SETUID`), ba symlink tương đối `doas`/`doasedit`/`sudo` cạnh binary,
-và bốn man page (mục 1 và mục 5). Không kèm `/etc/pam.d/doas`.
+và bốn man page (mục 1 và mục 5).
+
+Với `DOAS_AUTH_PROVIDER=PAM`, file `pam.d__doas__linux` được cài thành
+`${DOAS_PAM_DIR}/doas` (mặc định `/etc/pam.d/doas`) mode `0644` — đây là file dịch
+vụ mà `pam_start("doas", …)` tìm tới. Nội dung lấy nguyên từ upstream OpenDoas
+`v6.8.2`, gồm `auth`/`account`/`session` đều `include system-auth`, nên tương ứng
+một distro có `system-auth` (Arch, Fedora); trên Debian/Ubuntu phải thay bằng
+`common-auth`/`common-account`/`common-session`. Biến thể Darwin
+(`pam.d__doas__darwin`) không được cài vì bản port chỉ chạy trên Linux/glibc.
+Provider `SHADOW` không cài file này.
 
 ---
 
@@ -537,5 +547,6 @@ tắt có ghi lý do cho những check xung đột với ABI C được giữ ng
 | `libopenbsd/readpassphrase.c`, `closefrom.c`, `progname.c`, `strlcpy.c`/`strlcat.c`, `strtonum.c`, `bsd-setres_id.c`, `errc.c`/`verrc.c`, `explicit_bzero.c`, `reallocarray.c`, `sys-time.h`, `sys-tree.h` | `sys/terminal.cpp`, `sys/process.cpp`, `sys/error.cpp` (`set_progname`, `die`, `warn`), `sys/strings.cpp`, `sys/numbers.cpp`, `sys/secret.cpp`, `sys/time.hpp`, `env.cpp` | xem bảng ở mục 3                                                               |
 | `configure` + `GNUmakefile`                                                                                                                                                                                | `CMakeLists.txt`, `CMakePresets.json`, các `CMakeLists.txt` con                                                                                                           | tuỳ chọn CMake thay cờ `configure`                                             |
 | `doasedit` `main.rs`, `error.rs`, `file_handler.rs`, `editor.rs`, `utils.rs`                                                                                                                               | `doasedit/cli.cpp`, `doasedit.cpp`, `path.cpp`, `bridge.cpp`                                                                                                              | `prose()` hợp nhất bảng thông điệp của `error.rs`                              |
-| `fudo.c`                                                                                                                                                                                                   | `sudo/sudo.cpp`, `sudo/main.cpp`                                                                                                                                          | tách bảng dịch thuần khỏi phần hiệu ứng phụ                                    |
+| `fudo.c` | `sudo/sudo.cpp`, `sudo/main.cpp` | tách bảng dịch thuần khỏi phần hiệu ứng phụ |
+| `pam.d__doas__linux` (upstream tới `v6.8.2`) | `pam.d__doas__linux`, cài thành `${DOAS_PAM_DIR}/doas` | giữ nguyên nội dung; file Darwin của upstream không dùng |
 | `fudo.1`, `doas.1`, `doas.conf.5`, `doasedit.1`                                                                                                                                                            | `man/`                                                                                                                                                                    | cùng nội dung, thêm `sudo.1`                                                   |

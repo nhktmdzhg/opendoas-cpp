@@ -47,6 +47,7 @@ ctest --test-dir build
 | `DOAS_PERSIST_DIR`              | `/run/doas` | Thư mục chứa file timestamp                                         |
 | `DOAS_UID_MAX` / `DOAS_GID_MAX` | `65535`     | Trần uid/gid chấp nhận trong `doas.conf`                            |
 | `DOAS_SYSCONFDIR`               | `/etc`      | Thư mục chứa `doas.conf`                                            |
+| `DOAS_PAM_DIR`                  | `/etc/pam.d` | Nơi cài file dịch vụ PAM `doas` (chỉ khi provider là `PAM`)        |
 | `DOAS_INSTALL_SETUID` | `ON` | Cài binary kèm bit setuid |
 | `DOAS_TIDY_JOBS` | *(rỗng = số CPU)* | Số job song song cho target `tidy` |
 | `DOAS_SANITIZE` | *(rỗng)* | Danh sách sanitizer cho build debug |
@@ -63,9 +64,13 @@ sudo cmake --install build      # /usr/bin/doas-common + symlink doas, doasedit,
 ```
 
 Rule cài đặt đặt mode `4755` (tắt bằng `-DDOAS_INSTALL_SETUID=OFF`) và tự tạo ba
-symlink tương đối cạnh binary. Không kèm file cấu hình PAM: `/etc/pam.d/doas`
-phải tự viết và tự kiểm (lấy `/etc/pam.d/sudo` của distro làm điểm bắt đầu cũng
-được).
+symlink tương đối cạnh binary. Với provider `PAM`, file dịch vụ PAM cũng được cài
+thành `${DOAS_PAM_DIR}/doas` (mặc định `/etc/pam.d/doas`), mode `0644`: đó là file
+`pam.d__doas__linux` mà OpenDoas upstream còn giữ tới `v6.8.2` trước khi xoá, nội
+dung dùng `include system-auth` nên cần distro có `system-auth` (Arch, Fedora);
+trên Debian/Ubuntu phải thay bằng `common-auth`/`common-account`/`common-session`.
+Provider `SHADOW` không cài file này. Biến thể PAM cho Darwin của upstream không
+được dùng vì bản port chỉ chạy trên Linux/glibc.
 
 `doas.conf` nằm ở `/etc/doas.conf` (xem `man 5 doas.conf`), phải thuộc root và
 không được group/other ghi, nếu không applet từ chối chạy.

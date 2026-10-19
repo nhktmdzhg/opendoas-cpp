@@ -23,6 +23,7 @@ set(DOAS_PERSIST_DIR "/run/doas" CACHE PATH "Directory holding timestamp files")
 set(DOAS_UID_MAX "65535" CACHE STRING "Maximum uid accepted in doas.conf")
 set(DOAS_GID_MAX "65535" CACHE STRING "Maximum gid accepted in doas.conf")
 set(DOAS_SYSCONFDIR "/etc" CACHE PATH "Directory holding doas.conf")
+set(DOAS_PAM_DIR "${DOAS_SYSCONFDIR}/pam.d" CACHE PATH "Directory for the PAM service definition")
 option(DOAS_INSTALL_SETUID "Install the multicall binary setuid root" ON)
 set(DOAS_SANITIZE "" CACHE STRING "Sanitizer list for dev builds (e.g. address,undefined)")
 
@@ -69,6 +70,15 @@ endfunction()
 
 add_subdirectory(src)
 add_subdirectory(man)
+
+if(DOAS_AUTH_PROVIDER STREQUAL "PAM")
+    install(
+        FILES pam.d__doas__linux
+        DESTINATION ${DOAS_PAM_DIR}
+        RENAME doas
+        PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
+    )
+endif()
 
 if(BUILD_TESTING)
     add_subdirectory(tests)
