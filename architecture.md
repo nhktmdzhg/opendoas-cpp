@@ -322,8 +322,15 @@ con, phục hồi handler và tự gửi lại signal đã bắt (chuyển thàn
 
 SHADOW (`shadow.cpp`): đọc entry qua `getpwnam`/`getspnam`; hash `"x"` nghĩa là lấy
 từ shadow, hash rỗng hoặc bắt đầu bằng `*` là tài khoản không đăng nhập được →
-`Authentication failed`. Mật khẩu so bằng `sys::crypt_hash`, buffer mật khẩu bị
-wipe trước cả hai nhánh thoát.
+`Authentication failed`. Mật khẩu đọc vào `sys::Secret` (destructor
+`explicit_bzero`), hash shadow và kết quả `crypt(3)` cũng nằm trong buffer bị wipe;
+các bước xử lý mật khẩu gói trong một scope riêng để buffer được wipe **trước** khi
+`sys::die()` gọi `exit()` (exit không chạy destructor), nên không cần wipe thủ công
+trên từng nhánh thoát. So sánh bằng `sys::constant_time_equals` (không lộ vị trí
+khác biệt), và một lần sai bị giữ `kFailedAuthDelaySeconds = 1` giây trước khi báo
+lỗi — đúng thì trả ngay — để chặn brute-force ở mức 1 lần/giây. Provider PAM để
+module PAM tự lo timing (`pam_faildelay`/`pam_faillock`), nhưng cũng đã bỏ bản sao
+`std::string` không wipe của mật khẩu trong conversation callback.
 
 Khi timestamp còn hiệu lực, cả hai provider bỏ qua xác thực — đúng nhánh "good"
 của bản gốc.

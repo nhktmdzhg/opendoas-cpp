@@ -127,7 +127,17 @@ int main() {
         }
     }
 
-    // Exact equivalence for a realistic LINE_MAX sized line too.
+    // Constant time comparison of the shadow hash: equal, different in the middle,
+    // different at the end, length mismatch in both directions.
+    CHECK(sys::constant_time_equals("", ""));
+    CHECK(sys::constant_time_equals("$6$abc$def", "$6$abc$def"));
+    CHECK(!sys::constant_time_equals("$6$abc$def", "$6$abc$deg"));
+    CHECK(!sys::constant_time_equals("$6$abc$def", "$6$Xbc$def"));
+    CHECK(!sys::constant_time_equals("$6$abc$def", "$6$abc$de"));
+    CHECK(!sys::constant_time_equals("$6$abc$de", "$6$abc$def"));
+    CHECK(!sys::constant_time_equals("", "x"));
+    CHECK(!sys::constant_time_equals("x", ""));
+
     {
         const std::vector<std::string> argv = {
             "printf", "%s", "0123456789012345678901234567890123456789"};

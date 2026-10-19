@@ -32,6 +32,11 @@ class BoundedString {
 // matching Rust's str::from_utf8 for the cases doasedit relies on.
 [[nodiscard]] bool utf8_valid(std::string_view s);
 
+// Comparison for secret material: the loop walks the longer of the two inputs
+// whatever the contents, so the position of the first difference cannot be timed.
+// Used for the shadow password hash comparison.
+[[nodiscard]] bool constant_time_equals(std::string_view a, std::string_view b);
+
 } // namespace sys
 
 #endif // DOAS_SYS_STRINGS_HPP

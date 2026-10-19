@@ -85,4 +85,15 @@ bool utf8_valid(std::string_view s) {
     return true;
 }
 
+bool constant_time_equals(std::string_view a, std::string_view b) {
+    const size_t length = a.size() > b.size() ? a.size() : b.size();
+    unsigned char diff = a.size() == b.size() ? 0U : 1U;
+    for (size_t i = 0; i < length; i++) {
+        const auto left = i < a.size() ? static_cast<unsigned char>(a[i]) : 0U;
+        const auto right = i < b.size() ? static_cast<unsigned char>(b[i]) : 0U;
+        diff = static_cast<unsigned char>(diff | (left ^ right));
+    }
+    return diff == 0U;
+}
+
 } // namespace sys

@@ -1,5 +1,7 @@
 #include "sys/users.hpp"
 
+#include "sys/secret.hpp"
+
 #include <cerrno>
 #include <climits>
 #include <crypt.h>
@@ -149,9 +151,17 @@ Result<std::string> shadow_hash(std::string_view name) {
 }
 
 std::optional<std::string> crypt_hash(std::string_view password, std::string_view setting) {
-    const std::string pass(password);
-    const std::string salt(setting);
-    char* hashed = ::crypt(pass.c_str(), salt.c_str());
+    // crypt(3) needs NUL terminated strings. Both copies live in wiped buffers;
+    // Secret zero initialises, so the terminator is already in place.
+    sys::Secret pass(password.size() + 1);
+    sys::Secret salt(setting.size() + 1);
+    if (!password.empty()) {
+        std::memcpy(pass.data(), password.data(), password.size());
+    }
+    if (!setting.empty()) {
+        std::memcpy(salt.data(), setting.data(), setting.size());
+    }
+    char* hashed = ::crypt(pass.data(), salt.data());
     if (hashed == nullptr) {
         return std::nullopt;
     }

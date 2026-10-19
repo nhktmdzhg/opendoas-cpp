@@ -109,7 +109,15 @@ RespPtr pam_prompt(const char* msg, bool echo_on, int& ret) {
         ret = PAM_CONV_ERR;
         return response;
     }
-    response.reset(::strdup(std::string(*pass).c_str()));
+    // The password is copied into a second wiped buffer with an explicit terminator:
+    // a string_view carries no NUL guarantee, and the temporary std::string this used
+    // to go through copied the password onto the heap unzeroed. The duplicate created
+    // here belongs to libpam, which frees it.
+    sys::Secret plain(pass->size() + 1);
+    if (!pass->empty()) {
+        std::memcpy(plain.data(), pass->data(), pass->size());
+    }
+    response.reset(::strdup(plain.data()));
     if (!response) {
         ret = PAM_BUF_ERR;
         return response;

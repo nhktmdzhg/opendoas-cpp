@@ -20,6 +20,7 @@
 #include "sys/error.hpp"
 #include "sys/process.hpp"
 #include "sys/secret.hpp"
+#include "sys/strings.hpp"
 #include "sys/terminal.hpp"
 #include "sys/users.hpp"
 
@@ -34,6 +35,25 @@
 #include <unistd.h>
 
 namespace doas {
+
+namespace {
+
+// How long a failed attempt is delayed before it is reported. A correct password
+// returns immediately; a wrong one costs a second, which caps guessing at one
+// attempt per second. PAM runs its own timing (pam_faildelay / pam_faillock), so
+// this only applies to the shadow provider.
+constexpr unsigned int kFailedAuthDelaySeconds = 1;
+
+// Copies `text` into an already sized wiped buffer and wipes the source, for values
+// that must not survive on the heap (the shadow hash).
+void wipe_and_copy(std::string& text, sys::Secret& secret) {
+    if (!text.empty()) {
+        std::memcpy(secret.data(), text.data(), text.size());
+    }
+    explicit_bzero(text.data(), text.size());
+}
+
+} // namespace
 
 void shadow_auth(std::string_view user, bool persist) {
 #if defined(DOAS_PERSIST)
@@ -56,7 +76,9 @@ void shadow_auth(std::string_view user, bool persist) {
     if (!already_authenticated)
 #endif
     {
-        const auto pw = sys::pw_by_name(user);
+        const std::string myname(user);
+
+        auto pw = sys::pw_by_name(user);
         if (!pw) {
             // getpwnam(3) reports a missing entry without touching errno, so the
             // original printed "getpwnam: Success" there; an errno keeps its text.
@@ -65,44 +87,65 @@ void shadow_auth(std::string_view user, bool persist) {
                      "getpwnam");
         }
 
-        // The hash is copied out of libc's static storage: crypt(3) is called
-        // right afterwards and the original kept a pointer into
-        // getpwnam(3)/getspnam(3) storage there.
-        std::string hash = pw->passwd;
-        if (hash == "x") {
-            const auto sp = sys::shadow_hash(user);
+        // The verifier is copied out of libc's storage and out of the passwd entry
+        // into a wiped buffer: a passwd entry is not worth keeping in memory.
+        std::string verifier_text = pw->passwd;
+        explicit_bzero(pw->passwd.data(), pw->passwd.size());
+        if (verifier_text == "x") {
+            auto sp = sys::shadow_hash(user);
             if (!sp) {
                 // getspnam(3) returned NULL: the original reported this as an
                 // authentication failure (a NULL sp_pwdp would have been
                 // dereferenced).
                 sys::die(1, "Authentication failed");
             }
-            hash = *sp;
-        } else if (hash.empty() || hash[0] != '*') {
+            verifier_text = *sp;
+            explicit_bzero(sp->data(), sp->size());
+        } else if (verifier_text.empty() || verifier_text[0] != '*') {
+            explicit_bzero(verifier_text.data(), verifier_text.size());
             sys::die(1, "Authentication failed");
         }
 
-        const std::string myname(user);
+        sys::Secret verifier(verifier_text.size() + 1);
+        wipe_and_copy(verifier_text, verifier);
+        const std::string_view setting(verifier.data());
+
         const std::string challenge = password_prompt(myname, sys::process::hostname());
 
-        sys::Secret rbuf(1024);
-        const auto response = sys::readpassphrase(challenge, rbuf.span(), sys::kRppRequireTty);
-        if (!response) {
-            if (response.error().is(sys::Err::kNotATerminal)) {
+        // Everything that touches the password lives in this scope. Its Secret
+        // destructor wipes the buffer, and the failures below call exit() (which
+        // does not run destructors), so they are reported only after the scope ends.
+        bool matched = false;
+        bool prompt_failed = false;
+        sys::Error prompt_error;
+        {
+            sys::Secret rbuf(1024);
+            const auto response = sys::readpassphrase(challenge, rbuf.span(), sys::kRppRequireTty);
+            if (!response) {
+                prompt_failed = true;
+                prompt_error = response.error();
+            } else {
+                std::optional<std::string> encrypted = sys::crypt_hash(*response, setting);
+                if (encrypted) {
+                    matched = sys::constant_time_equals(*encrypted, setting);
+                    explicit_bzero(encrypted->data(), encrypted->size());
+                }
+            }
+        }
+
+        if (prompt_failed) {
+            if (prompt_error.is(sys::Err::kNotATerminal)) {
                 sys::log(LOG_AUTHPRIV | LOG_NOTICE, std::format("tty required for {}", myname));
                 sys::die(1, "a tty is required");
             }
-            sys::die(1, response.error(), "readpassphrase");
+            sys::die(1, prompt_error, "readpassphrase");
         }
 
-        const std::optional<std::string> encrypted = sys::crypt_hash(*response, hash);
-        if (!encrypted) {
-            explicit_bzero(rbuf.data(), rbuf.span().size());
-            sys::die(1, "Authentication failed");
-        }
-        explicit_bzero(rbuf.data(), rbuf.span().size());
-        if (*encrypted != hash) {
+        if (!matched) {
             sys::log(LOG_AUTHPRIV | LOG_NOTICE, std::format("failed auth for {}", myname));
+            // Slow down guessing: a wrong password costs a second before the failure
+            // is reported, while a correct one returns immediately.
+            sys::process::sleep_seconds(kFailedAuthDelaySeconds);
             sys::die(1, "Authentication failed");
         }
     }
