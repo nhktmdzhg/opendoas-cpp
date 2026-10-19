@@ -6,7 +6,7 @@ Một binary **multicall** duy nhất, chứa cả ba applet. Không có `doas`,
 | Applet     | Symlink    | Việc                                                                                                                                         |
 | ---------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `doas`     | `doas`     | Chạy lệnh với quyền user khác (port của [OpenDoas](https://github.com/Duncaen/OpenDoas), gốc là `doas` của OpenBSD)                          |
-| `doasedit` | `doasedit` | Sửa file bằng quyền root nhưng dùng editor chạy dưới quyền user (port của [`doasedit`](https://github.com/nktmdzhg/doasedit) viết bằng Rust) |
+| `doasedit` | `doasedit` | Sửa file bằng quyền root nhưng dùng editor chạy dưới quyền user (port của [`doasedit`](https://github.com/nhktmdzhg/doasedit) viết bằng Rust) |
 | `sudo`     | `sudo`     | Dịch command line kiểu `sudo` sang tham số `doas` rồi chạy (port của `fudo`)                                                                 |
 
 Hành vi, thông điệp, exit code và cú pháp `doas.conf` giữ **y nguyên** so với bản

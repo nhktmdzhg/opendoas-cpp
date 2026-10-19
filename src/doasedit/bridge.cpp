@@ -46,17 +46,21 @@ Result run(std::initializer_list<std::string_view> argv, bool capture) {
 
     if (*child == 0) {
         const int null_fd = devnull->get();
-        if (sys::fs::dup2_onto(null_fd, STDIN_FILENO) ||
-            sys::fs::dup2_onto(null_fd, STDERR_FILENO)) {
+        if (!sys::fs::dup2_onto(null_fd, STDIN_FILENO)) {
             ::_exit(1);
         }
+        // stderr is deliberately not redirected: the Rust original captured it via
+        // Command::output() and dropped it, so a refused command ("not installed
+        // setuid", "command not permitted", a failing PAM stack) produced nothing
+        // but the misleading "3 incorrect password attempts". doas writes its
+        // diagnostics there, while its password prompt goes to /dev/tty.
         if (pipe) {
-            if (sys::fs::dup2_onto(pipe->second.get(), STDOUT_FILENO)) {
+            if (!sys::fs::dup2_onto(pipe->second.get(), STDOUT_FILENO)) {
                 ::_exit(1);
             }
             pipe->first.reset();
             pipe->second.reset();
-        } else if (sys::fs::dup2_onto(null_fd, STDOUT_FILENO)) {
+        } else if (!sys::fs::dup2_onto(null_fd, STDOUT_FILENO)) {
             ::_exit(1);
         }
         devnull->reset();
@@ -69,7 +73,13 @@ Result run(std::initializer_list<std::string_view> argv, bool capture) {
         sys::set_progname("doas");
 
         std::vector<std::string> owned;
-        owned.reserve(argv.size());
+        owned.reserve(argv.size() + 1);
+        // argv[0] slot, exactly like the original's Command::new("doas"): the doas
+        // applet starts parsing its own options at argv[1] and takes the command
+        // from argv[optind]. Passing the command in the argv[0] slot made getopt
+        // eat the command's own arguments ("doas test -e f" became an invalid
+        // option) and shifted the command: "dd status=none ..." ran "status=none".
+        owned.emplace_back("doas");
         for (const std::string_view arg : argv) {
             owned.emplace_back(arg);
         }

@@ -487,7 +487,13 @@ Cờ biên dịch: `-Wall -Wextra -Werror -Wconversion -Wsign-conversion
 -Wshorten-64-to-32 -fno-exceptions -fno-rtti -ffunction-sections -fdata-sections
 -fstack-protector-strong`, thêm `_FORTIFY_SOURCE=3` ở build Release. Cờ liên kết:
 libstdc++/libgcc tĩnh, libc/libpam/libcrypt động, `-Wl,--gc-sections`,
-`-Wl,-z,relro,-z,now,-z,noexecstack`.
+`Wl,-z,relro,-z,now,-z,noexecstack`.
+
+Vì libstdc++ và libgcc được link tĩnh, unwinder của libgcc nằm trong binary và
+tham chiếu `_dl_find_object`; script `libc.so` của glibc vì thế ghi thêm
+`ld-linux-x86-64.so.2` vào `DT_NEEDED` (lld và bfd đều vậy). Chương trình không
+gọi trực tiếp vào loader, nên các công cụ như namcap báo entry này là "thư viện
+chia sẻ không dùng tới".
 
 ### 8.3 Cài đặt
 
