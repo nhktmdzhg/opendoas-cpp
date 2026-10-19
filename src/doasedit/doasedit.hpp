@@ -30,7 +30,6 @@ enum class Err {
     kUserAbort,        // aborted by user
     kInvalidPath,      // invalid editor command: 'Invalid file path'
     kTempDirectory,    // Error creating temporary directory: <subject>
-    kValidation,       // doas validation error: <subject>
 };
 
 const std::error_category& category(); // name() == "doasedit"

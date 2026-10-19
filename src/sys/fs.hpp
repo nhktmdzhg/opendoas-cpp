@@ -45,6 +45,14 @@ class Fd {
 [[nodiscard]] Result<struct stat> stat_follow(std::string_view path);
 [[nodiscard]] Result<struct stat> fstat_fd(int fd);
 
+// memfd_create(2): an anonymous in-kernel file, used for the comparison copy so that the pre-edit
+// content never reaches a disk. MFD_CLOEXEC is always set.
+[[nodiscard]] Result<Fd> memfd(std::string_view name);
+
+// Best effort mlock(2) on a span already written; failure (e.g. RLIMIT_MEMLOCK) is reported but
+// never fatal.
+[[nodiscard]] Status mlock_span(std::span<const char> data);
+
 // open(2). mode is only used with O_CREAT, mirroring the raw syscall.
 [[nodiscard]] Result<Fd> open_file(std::string_view path, int flags, mode_t mode = 0);
 
@@ -53,6 +61,9 @@ class Fd {
 
 // Read until end of file into a string.
 [[nodiscard]] Result<std::string> read_all(int fd);
+
+// lseek(fd, 0, SEEK_SET): needed to re-read a memfd that was written to.
+[[nodiscard]] Status rewind_fd(int fd);
 
 // Write every byte, retrying on partial writes.
 [[nodiscard]] Status write_all(int fd, std::string_view data);

@@ -20,14 +20,16 @@ add_doas_test(t_exec sys_core doas_core)
 add_doas_test(t_sudo_table sys_core sudo_app)
 add_doas_test(t_doasedit_cli sys_core doasedit_app)
 
-# The doasedit policy test substitutes the scripted bridge for the real one.
-add_executable(t_doasedit_policy t_doasedit_policy.cpp fake_bridge.cpp)
-target_link_libraries(t_doasedit_policy PRIVATE sys_core doasedit_app)
+# The doasedit policy test substitutes the scripted privileged operations for the
+# real ones.
+add_executable(t_doasedit_policy t_doasedit_policy.cpp fake_elevated.cpp)
+target_link_libraries(t_doasedit_policy PRIVATE sys_core doasedit_app doas_core)
 doas_target_defaults(t_doasedit_policy)
 add_test(NAME t_doasedit_policy COMMAND t_doasedit_policy)
 
-# Same, but through the real bridge (child argv, stdio and exit status).
-add_doas_test(t_bridge sys_core doasedit_bridge)
+# The real privileged operations and the in-process config validation, exercised as
+# far as possible without the setuid bit.
+add_doas_test(t_elevated sys_core doas_core doasedit_elevated)
 
 # Tests that drive the real multicall binary through its applet symlinks.
 foreach(name IN ITEMS t_golden t_identity t_sudo_main t_dispatch)

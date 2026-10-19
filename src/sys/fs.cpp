@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <sys/mman.h>
 #include <unistd.h>
 #include <vector>
 
@@ -57,6 +58,26 @@ Result<struct stat> fstat_fd(int fd) {
     return st;
 }
 
+// memfd_create(2): an anonymous in-kernel file that never appears in a filesystem.
+Result<Fd> memfd(std::string_view name) {
+    const std::string label(name);
+    const int fd = ::memfd_create(label.c_str(), MFD_CLOEXEC);
+    if (fd == -1) {
+        return std::unexpected(fail_errno(errno));
+    }
+    return Fd(fd);
+}
+
+Status mlock_span(std::span<const char> data) {
+    if (data.empty()) {
+        return {};
+    }
+    if (::mlock(data.data(), data.size()) != 0) {
+        return std::unexpected(fail_errno(errno));
+    }
+    return {};
+}
+
 Result<Fd> open_file(std::string_view path, int flags, mode_t mode) {
     const std::string name(path);
     const int fd = ::open(name.c_str(), flags, mode);
@@ -91,6 +112,13 @@ Result<std::string> read_all(int fd) {
         }
         out.append(chunk.data(), *got);
     }
+}
+
+Status rewind_fd(int fd) {
+    if (::lseek(fd, 0, SEEK_SET) == static_cast<off_t>(-1)) {
+        return std::unexpected(fail_errno(errno));
+    }
+    return {};
 }
 
 Status write_all(int fd, std::string_view data) {

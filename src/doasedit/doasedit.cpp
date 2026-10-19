@@ -27,8 +27,9 @@
 // sys::Error instead of pre-formatted strings.
 #include "doasedit/doasedit.hpp"
 
-#include "doasedit/bridge.hpp"
+#include "doas/config.hpp"
 #include "doasedit/cli.hpp"
+#include "doasedit/elevated.hpp"
 #include "doasedit/path.hpp"
 #include "sys/error.hpp"
 #include "sys/fs.hpp"
@@ -38,7 +39,6 @@
 
 #include <array>
 #include <cerrno>
-#include <charconv>
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
@@ -98,8 +98,6 @@ class DoaseditCategory : public std::error_category {
             return "Invalid file path";
         case Err::kTempDirectory:
             return "Error creating temporary directory";
-        case Err::kValidation:
-            return "doas validation error";
         }
         return std::format("doasedit error {}", value);
     }
@@ -111,7 +109,6 @@ sys::Error error_of(Err kind, std::string_view subject = {}) {
     return sys::with_subject(sys::Error{make_error_code(kind), {}}, subject);
 }
 
-constexpr std::string_view kCopyPrefix = "copy-of-";
 constexpr std::string_view kPrompt = "(E)dit again, (O)verwrite anyway, (A)bort: [E/o/a]? ";
 
 // ---------------------------------------------------------------------------
@@ -144,46 +141,6 @@ std::string lower_ascii(std::string_view text) {
     return out;
 }
 
-std::vector<std::string_view> split_whitespace(std::string_view text) {
-    std::vector<std::string_view> parts;
-    size_t i = 0;
-    while (i < text.size()) {
-        while (i < text.size() && is_ascii_space(text[i])) {
-            i++;
-        }
-        const size_t start = i;
-        while (i < text.size() && !is_ascii_space(text[i])) {
-            i++;
-        }
-        if (i > start) {
-            parts.push_back(text.substr(start, i - start));
-        }
-    }
-    return parts;
-}
-
-std::optional<unsigned int> parse_u32(std::string_view text) {
-    unsigned int value = 0;
-    const char* begin = text.data();
-    const char* end = text.data() + text.size();
-    const auto result = std::from_chars(begin, end, value);
-    if (result.ec != std::errc{} || result.ptr != end) {
-        return std::nullopt;
-    }
-    return value;
-}
-
-std::optional<unsigned int> parse_u32_base8(std::string_view text) {
-    unsigned int value = 0;
-    const char* begin = text.data();
-    const char* end = text.data() + text.size();
-    const auto result = std::from_chars(begin, end, value, 8);
-    if (result.ec != std::errc{} || result.ptr != end) {
-        return std::nullopt;
-    }
-    return value;
-}
-
 std::string join_path(std::string_view dir, std::string_view name) {
     return std::string(dir) + "/" + std::string(name);
 }
@@ -192,43 +149,35 @@ std::string join_path(std::string_view dir, std::string_view name) {
 // Status checks (utils.rs)
 // ---------------------------------------------------------------------------
 
-std::optional<FileInfo> status_of(std::string_view path) {
-    const auto st = sys::fs::stat_follow(path);
-    if (!st) {
-        return std::nullopt;
+// True when the invoking user can open the file for reading. Replaces the Rust
+// `permissions().readonly()` test, which was not a readability test at all: a root
+// owned mode 0640 file (e.g. /etc/shadow) counted as "readable" and the plain copy
+// then failed with EACCES.
+bool user_can_read(std::string_view path) {
+    const std::string name(path);
+    const int fd = ::open(name.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd == -1) {
+        return false;
     }
+    (void)::close(fd);
+    return true;
+}
+
+// Builds FileInfo from a stat result. Readability is passed in because the caller
+// decides how to probe it (user space open, or an elevated stat of a file the user
+// cannot even see).
+FileInfo info_from_stat(const struct stat& st, bool readable) {
     FileInfo info;
     info.exists = true;
-    info.is_directory = S_ISDIR(st->st_mode);
+    info.is_directory = S_ISDIR(st.st_mode);
     if (info.is_directory) {
         return info;
     }
-    const unsigned int mode = static_cast<unsigned int>(st->st_mode & 07777);
-    const uid_t uid = sys::process::uid();
-    info.is_owned_by_user = st->st_uid == uid;
-    info.readable = (mode & 0222U) != 0; // permissions().readonly() == false
-    info.writable = (mode & 0222U) != 0 && st->st_uid == uid;
+    const unsigned int mode = static_cast<unsigned int>(st.st_mode & 07777);
+    info.is_owned_by_user = st.st_uid == sys::process::uid();
+    info.readable = readable;
+    info.writable = (mode & 0222U) != 0 && info.is_owned_by_user;
     return info;
-}
-
-// get_file_metadata_with_doas(): parses "doas stat -c '%u %a' <path>".
-sys::Result<std::pair<uid_t, unsigned int>> metadata_with_doas(const std::string& path) {
-    const bridge::Result result =
-        bridge::spawn_capture({std::string("stat"), std::string("-c"), std::string("%u %a"), path});
-    if (result.status != 0) {
-        return std::unexpected(error_of(Err::kDoasCat));
-    }
-
-    const std::vector<std::string_view> parts = split_whitespace(result.out);
-    if (parts.size() < 2) {
-        return std::unexpected(error_of(Err::kValidation, "Invalid stat output"));
-    }
-    const std::optional<unsigned int> uid = parse_u32(parts[0]);
-    if (!uid) {
-        return std::unexpected(error_of(Err::kValidation, "Invalid UID format"));
-    }
-    const unsigned int mode = parse_u32_base8(parts[1]).value_or(0644U);
-    return std::pair<uid_t, unsigned int>{static_cast<uid_t>(*uid), mode};
 }
 
 // ---------------------------------------------------------------------------
@@ -328,55 +277,44 @@ sys::Status run_editor(const std::string& editor, const std::string& file) {
     return std::unexpected(error_of(Err::kEditorFailed));
 }
 
-// create_secure_temp_copy()
-sys::Result<std::pair<std::string, std::string>>
-create_secure_temp_copy(std::string_view file_path, std::string_view temp_dir) {
-    const std::optional<std::string> filename = path::file_name_of(file_path);
-    if (!filename) {
-        return std::unexpected(error_of(Err::kInvalidPath));
-    }
-    const std::string copy_name = std::string(kCopyPrefix) + *filename;
-
-    const std::string tmp_file = join_path(temp_dir, *filename);
-    const std::string tmp_copy = join_path(temp_dir, copy_name);
-
+// The temp file the editor works on is the only thing of one edit that touches the
+// disk: mode 0600, inside the caller's private temp directory.
+sys::Status create_temp_file(std::string_view tmp_file) {
     if (sys::Status written = sys::fs::write_file(tmp_file, ""); !written) {
-        return std::unexpected(written.error());
+        return written;
     }
-    if (sys::Status written = sys::fs::write_file(tmp_copy, ""); !written) {
-        return std::unexpected(written.error());
-    }
-
-    // Set secure permissions (0600).
     if (sys::Status mode = sys::fs::chmod_path(tmp_file, 0600); !mode) {
-        return std::unexpected(mode.error());
+        return mode;
     }
-    if (sys::Status mode = sys::fs::chmod_path(tmp_copy, 0600); !mode) {
-        return std::unexpected(mode.error());
+    return {};
+}
+
+// fill_comparison_copy(): the pre-edit content goes into the memfd, so that the
+// comparison after the editor never reads a second copy from the disk. mlock() is
+// best effort (a locked page cannot be swapped out).
+sys::Status fill_comparison_copy(std::string_view tmp_file, const sys::fs::Fd& copy) {
+    const auto content = sys::fs::read_file(tmp_file);
+    if (!content) {
+        return std::unexpected(content.error());
     }
-    return std::pair<std::string, std::string>{tmp_file, tmp_copy};
+    if (sys::Status written = sys::fs::write_all(copy.get(), *content); !written) {
+        return written;
+    }
+    (void)sys::fs::mlock_span(*content);
+    return sys::fs::rewind_fd(copy.get());
 }
 
 // copy_original_content()
 sys::Status
 copy_original_content(const std::string& original, const std::string& tmp_file, bool use_doas) {
     if (use_doas) {
-        const bridge::Result result = bridge::spawn_capture({"cat", original});
+        const elevated::Text result = elevated::read_path(original);
         if (result.status != 0) {
             return std::unexpected(error_of(Err::kDoasCat));
         }
         return sys::fs::write_file(tmp_file, result.out);
     }
     const auto copied = sys::fs::copy_file(original, tmp_file);
-    if (!copied) {
-        return std::unexpected(copied.error());
-    }
-    return {};
-}
-
-// create_comparison_copy()
-sys::Status create_comparison_copy(const std::string& tmp_file, const std::string& tmp_copy) {
-    const auto copied = sys::fs::copy_file(tmp_file, tmp_copy);
     if (!copied) {
         return std::unexpected(copied.error());
     }
@@ -391,11 +329,16 @@ bool is_doas_config_file(std::string_view file_path) {
 // validate_doas_config()
 sys::Status validate_doas_config(const std::string& tmp_file, const std::string& editor) {
     for (;;) {
-        const bridge::Result result = bridge::spawn_discard({"-C", tmp_file});
-        if (result.status == 0) {
+        const sys::Result<std::string> diagnostics = doas::validate_config(tmp_file);
+        if (!diagnostics) {
+            return std::unexpected(sys::with_subject(diagnostics.error(), tmp_file));
+        }
+        if (diagnostics->empty()) {
             break;
         }
 
+        // `doas -C` printed these lines on stderr; keep that order.
+        sys::err_out(*diagnostics);
         sys::err_out(std::format(
             "doasedit: Replacing '{}' would introduce the above error and break doas.\n",
             tmp_file));
@@ -420,20 +363,25 @@ sys::Status validate_doas_config(const std::string& tmp_file, const std::string&
     return {};
 }
 
-// files_match()
-sys::Result<bool> files_match(const std::string& first, const std::string& second) {
-    const auto content1 = sys::fs::read_file(first);
-    if (!content1) {
-        return std::unexpected(content1.error());
+// files_match(): the edited temp file against the pre-edit copy kept in the memfd.
+sys::Result<bool> files_match(const std::string& path, const sys::fs::Fd& copy) {
+    const auto edited = sys::fs::read_file(path);
+    if (!edited) {
+        return std::unexpected(edited.error());
     }
-    const auto content2 = sys::fs::read_file(second);
-    if (!content2) {
-        return std::unexpected(content2.error());
+    // The memfd was written to, so its offset sits at the end.
+    if (sys::Status rewound = sys::fs::rewind_fd(copy.get()); !rewound) {
+        return std::unexpected(rewound.error());
     }
-    return *content1 == *content2;
+    const auto original = sys::fs::read_all(copy.get());
+    if (!original) {
+        return std::unexpected(original.error());
+    }
+    return *edited == *original;
 }
 
-// write_file_back()
+// write_file_back(): the password, if any, was already asked before the editor
+// opened; this only re-checks the rule for the "dd" command line.
 sys::Status
 write_file_back(const std::string& tmp_file, const std::string& original, bool writable) {
     if (writable) {
@@ -444,18 +392,14 @@ write_file_back(const std::string& tmp_file, const std::string& original, bool w
         return {};
     }
 
-    // Try with doas (with retry for password).
-    for (int attempt = 0; attempt < 3; attempt++) {
-        const bridge::Result result =
-            bridge::spawn_discard({"dd", "status=none", "if=" + tmp_file, "of=" + original});
-        if (result.status == 0) {
-            return {};
-        }
-        if (attempt == 2) {
-            return std::unexpected(error_of(Err::kThreeAttempts));
-        }
+    const auto opened = sys::fs::open_file(tmp_file, O_RDONLY);
+    if (!opened) {
+        return std::unexpected(opened.error());
     }
-    return std::unexpected(error_of(Err::kThreeAttempts));
+    if (elevated::write_path(original, tmp_file, *opened) != 0) {
+        return std::unexpected(error_of(Err::kThreeAttempts));
+    }
+    return {};
 }
 
 } // namespace
@@ -490,8 +434,6 @@ std::string prose(const sys::Error& error) {
         case Err::kNoDirectory:
         case Err::kReadableWritable:
             return std::format("{}: {}", error.subject, error.code.message());
-        case Err::kValidation:
-            return std::format("doas validation error: {}", error.subject);
         case Err::kInvalidPath:
             return std::format("invalid editor command: '{}'", error.code.message());
         case Err::kTempDirectory:
@@ -505,39 +447,29 @@ std::string prose(const sys::Error& error) {
 sys::Result<FileInfo> check_file_status(std::string_view path) {
     const uid_t uid = sys::process::uid();
 
-    // First try without doas.
-    if (const std::optional<FileInfo> info = status_of(path)) {
-        return *info;
+    // A plain stat answers the common case; only a permission failure means root
+    // has to look, so a file that simply does not exist never costs a fork (and
+    // never asks for a password before the policy check below).
+    const sys::Result<struct stat> st = sys::fs::stat_follow(path);
+    if (st) {
+        return info_from_stat(*st, user_can_read(path));
     }
 
-    // Try with doas.
-    const std::string target(path);
-    const bridge::Result exists = bridge::spawn_discard({"test", "-e", target});
-    if (exists.status == 0) {
-        const bridge::Result is_file = bridge::spawn_discard({"test", "-f", target});
-        if (is_file.status != 0) {
-            FileInfo info;
-            info.exists = true;
-            info.is_directory = true;
-            return info;
+    const int stat_errno = st.error().errno_value();
+    const bool needs_root = stat_errno == EACCES || stat_errno == EPERM;
+    if (needs_root) {
+        // A directory the user may not search, or a file only root can see: one
+        // elevated stat answers existence, type and metadata (the applet used to
+        // spend three forks on `doas test -e`, `doas test -f` and `doas stat`).
+        const sys::Result<struct stat> elevated_stat = elevated::stat_path(path);
+        if (elevated_stat) {
+            return info_from_stat(*elevated_stat, user_can_read(path));
         }
-
-        auto metadata = metadata_with_doas(target);
-        if (!metadata) {
-            return std::unexpected(metadata.error());
-        }
-
-        FileInfo info;
-        info.exists = true;
-        info.readable = true;                            // Assuming readable if doas can read it
-        info.writable = (metadata->second & 0200U) != 0; // User write bit
-        info.is_owned_by_user = metadata->first == uid;
-        return info;
     }
 
     // File doesn't exist, check directory.
     const std::string dir = path::parent_of(path);
-    const auto dir_stat = sys::fs::stat_follow(dir);
+    const sys::Result<struct stat> dir_stat = sys::fs::stat_follow(dir);
     if (dir_stat) {
         const unsigned int mode = static_cast<unsigned int>(dir_stat->st_mode & 07777);
         if (dir_stat->st_uid == uid) {
@@ -547,8 +479,9 @@ sys::Result<FileInfo> check_file_status(std::string_view path) {
             return std::unexpected(error_of(Err::kWritableDir, path));
         }
     } else {
-        const bridge::Result dir_exists = bridge::spawn_discard({"test", "-d", dir});
-        if (dir_exists.status != 0) {
+        const int dir_errno = dir_stat.error().errno_value();
+        const bool dir_needs_root = dir_errno == EACCES || dir_errno == EPERM;
+        if (!dir_needs_root || !elevated::stat_path(dir)) {
             return std::unexpected(error_of(Err::kNoDirectory, dir));
         }
     }
@@ -571,14 +504,16 @@ process_file(std::string_view file_path, std::string_view editor, std::string_vi
     if (!status) {
         return std::unexpected(status.error());
     }
-    const FileInfo info = *status;
+    FileInfo info = *status;
 
-    const auto paths = create_secure_temp_copy(file_path, tmp_dir);
-    if (!paths) {
-        return std::unexpected(paths.error());
+    // The temp path is needed before the first authorization: the rule for the "dd"
+    // command line carries it, and the write after the editor has to use the same
+    // string for that rule to match again.
+    const std::optional<std::string> filename = path::file_name_of(file_path);
+    if (!filename) {
+        return std::unexpected(error_of(Err::kInvalidPath));
     }
-    const std::string& tmp_file = paths->first;
-    const std::string& tmp_copy = paths->second;
+    const std::string tmp_file = join_path(tmp_dir, *filename);
 
     if (info.exists) {
         if (info.is_owned_by_user) {
@@ -590,15 +525,37 @@ process_file(std::string_view file_path, std::string_view editor, std::string_vi
         if (info.readable && info.writable) {
             return std::unexpected(error_of(Err::kReadableWritable, file_path));
         }
+    } else {
+        // A file that does not exist yet is created through doas by
+        // write_file_back(), so the write always needs authorization.
+        info.writable = false;
+    }
 
+    // The password is asked here, before the editor opens; every later operation of
+    // this run only re-checks the rule.
+    if (info.exists && !info.readable && elevated::authorize_read(file_path) != 0) {
+        return std::unexpected(error_of(Err::kDoasCat));
+    }
+    if (!info.writable && elevated::authorize_write(tmp_file, file_path, 3) != 0) {
+        return std::unexpected(error_of(Err::kThreeAttempts));
+    }
+
+    if (sys::Status created = create_temp_file(tmp_file); !created) {
+        return created;
+    }
+    auto copy = sys::fs::memfd("doasedit-copy");
+    if (!copy) {
+        return std::unexpected(copy.error());
+    }
+
+    if (info.exists) {
         if (sys::Status copied =
                 copy_original_content(std::string(file_path), tmp_file, !info.readable);
             !copied) {
             return copied;
         }
-
-        if (sys::Status copied = create_comparison_copy(tmp_file, tmp_copy); !copied) {
-            return copied;
+        if (sys::Status filled = fill_comparison_copy(tmp_file, *copy); !filled) {
+            return filled;
         }
     }
 
@@ -613,7 +570,7 @@ process_file(std::string_view file_path, std::string_view editor, std::string_vi
         }
     }
 
-    const auto same = files_match(tmp_file, tmp_copy);
+    const auto same = files_match(tmp_file, *copy);
     if (!same) {
         return std::unexpected(same.error());
     }

@@ -20,6 +20,7 @@ add_library(
     doas_core
     STATIC
     auth.cpp
+    authorize.cpp
     config.cpp
     doas.cpp
     env.cpp

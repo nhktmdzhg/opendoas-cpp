@@ -31,6 +31,7 @@ src/
 │   └── users.{hpp,cpp}      passwd/group/shadow lookup, crypt, getgroups
 ├── doas/           applet doas
 │   ├── doas.cpp             main, check_config, vòng đời tiến trình
+│   ├── authorize.{hpp,cpp}  authorize_command: rule + PAM/shadow, không exec
 │   ├── config.{hpp,cpp}     Rule, match_rule/permit, parse_uid/parse_gid, parse_config
 │   ├── parse.y              grammar bison (C++ skeleton) cho doas.conf
 │   ├── env.cpp              create_env/fill_env/prepenv (dựng envp)
@@ -43,7 +44,7 @@ src/
 │   ├── cli.{hpp,cpp}        parse CLI tương thích clap, help/version text
 │   ├── path.{hpp,cpp}       is_directory_path, parent_of, file_name_of
 │   ├── doasedit.cpp         check_file_status, process_file, prose(), main
-│   └── bridge.{hpp,cpp}     cầu nối gọi doas in-process (fork + pipe)
+│   └── elevated.{hpp,cpp}   thao tác file cần root (auth + stat/read/write native)
 ├── sudo/           applet sudo
 │   ├── sudo.{hpp,cpp}       bảng kEquiv + translate() thuần
 │   └── main.cpp             trace, export SUDO_*, handoff sang doas
@@ -92,20 +93,21 @@ flowchart TD
     B -->|khác| F["err_out unknown applet → exit 1"]
     D --> G["doasedit::main()"]
     E --> H["sudo::main(): dịch cờ → nâng euid 0 → doas::replace_main()"]
-    G --> I["bridge: fork con → con nâng euid 0 → doas::replace_main()"]
+    G --> I["elevated: fork con → con nâng euid 0 → authorize_command + stat/read/write"]
 ```
 
 - `sudo`: in trace, export `SUDO_*`, rồi `set_res_uid(kKeepId, 0, kKeepId)` và gọi
   `doas::replace_main()` với argv đã dịch. Khi binary không setuid, lần nâng quyền
   thất bại và applet doas báo `not installed setuid` — cùng thông điệp mà bản gốc
   phát ra khi gọi `doas` thiếu setuid.
-- `doasedit`: các bước cần quyền root (`doas cat`, `doas stat`, `doas dd`) đi qua
-  `bridge::spawn_capture()` / `spawn_discard()`: `fork()`, tiến trình con nâng euid
-  về 0 rồi gọi `doas::replace_main()`; stdout của con nối vào pipe cho cha đọc,
-  stderr và stdin về `/dev/null`. Mô hình "gọi doas như subprocess" của bản Rust
-  (`Command::new("doas")`) được giữ nguyên về mặt quan sát, nhưng không phụ thuộc
-  việc có binary `doas` trong `PATH`. Con `_exit()` chứ không `exit()` để đệm stdio
-  không bị flush hai lần.
+- `doasedit`: không gọi `doas::replace_main()` và không exec binary nào. Mỗi thao
+  tác cần quyền root đi qua `doasedit::elevated` (`src/doasedit/elevated.cpp`):
+  `fork()`, tiến trình con `set_res_uid(kKeepId, 0, kKeepId)`, gọi
+  `doas::authorize_command()` (rule + PAM/shadow/persist, đúng chuỗi lệnh mà bản
+  Rust truyền cho `doas`), rồi tự thực hiện `stat`/`read`/`write`; kết quả và lỗi
+  trả về qua pipe (status word ở cuối luồng). Cha giữ file tạm, con không ghi vào
+  thư mục tạm. `authorize_command()` trả về trong tiến trình con của phiên PAM (nếu
+  có xác thực), nên status của thao tác đi ngược lên đúng chuỗi `waitpid`.
 
 ---
 
@@ -371,7 +373,6 @@ Bốn nhóm chức năng:
    | `kReadableWritable` | `<subject>: editing user-readable and -writable files is not permitted`   |
    | `kDoasCat`          | `you are not permitted to call 'doas cat'`                                |
    | `kThreeAttempts`    | `3 incorrect password attempts`                                           |
-   | `kValidation`       | `doas validation error: <subject>`                                        |
    | `kTempDirectory`    | `Error creating temporary directory: <subject>`                           |
    | lỗi syscall         | `<strerror> (os error <N>)` — đúng định dạng `io::Error` của Rust         |
 
@@ -382,28 +383,36 @@ flowchart TD
     A["kết thúc bằng / ?"] -->|có| X["cannot edit directories"]
     A -->|không| B["file_name_of() tồn tại?"]
     B -->|không| Y["invalid editor command: 'Invalid file path'"]
-    B -->|có| C["check_file_status()"]
-    C --> D["create_secure_temp_copy() trong tmp dir 0700"]
-    D --> E{"file tồn tại?"}
-    E -->|có| F["từ chối: own file / not regular / readable+writable"]
-    E -->|có| G["copy nội dung gốc (doas cat nếu user không đọc được)"]
-    G --> H["tạo bản copy để so sánh"]
-    F --> I["run_editor()"]
-    H --> I
-    I --> J{"là doas.conf?"}
-    J -->|có| K["validate_doas_config(): chạy doas -C"]
-    J -->|không| L["files_match()"]
-    K --> L
-    L -->|khác nhau| M["write_file_back()"]
-    L -->|giống nhau| N["in 'unchanged'"]
+    B -->|có| C["stat(2) trong user space; EACCES → stat bằng tiến trình con euid 0"]
+    C --> D["từ chối policy: own file / not regular / readable+writable"]
+    D --> E{"user đọc được?"}
+    E -->|không| F["elevated::authorize_read — hỏi mật khẩu một lần"]
+    E -->|có| G["elevated::authorize_write — hỏi mật khẩu một lần"]
+    F --> G
+    G --> H["tạo temp file 0600 + memfd cho bản đối chiếu"]
+    H --> I["đọc nội dung gốc: copy thường hoặc read_path (root)"]
+    I --> J["run_editor()"]
+    J --> K{"là doas.conf?"}
+    K -->|có| L["validate_config() in-process"]
+    K -->|không| M["files_match(temp file, memfd)"]
+    L --> M
+    M -->|khác nhau| N["copy thường hoặc write_path (root, không hỏi lại)"]
+    M -->|giống nhau| O["in 'unchanged'"]
 ```
 
+Mật khẩu được hỏi **trước** khi editor mở (một lần cho cả lần chạy), nên file
+user không đọc được như `/etc/shadow` (mode `0640 root:shadow`) vẫn edit được; các
+thao tác cần root chạy trong tiến trình con `euid 0` với `authorize_command()` của
+doas (rule + PAM/shadow + persist), rồi `stat`/`read`/`write` native — không spawn
+`doas cat`, `doas dd`, `doas test`, `doas stat`. Bản copy đối chiếu nằm trong
+`memfd_create(2)`, chỉ file editor sửa mới chạm đĩa.
+
 Các chi tiết giữ nguyên so với bản Rust: thứ tự chọn editor `DOAS_EDITOR` →
-`VISUAL` → `EDITOR` → `vi`; tiền tố file tạm `copy-of-`; prompt xác nhận
-`(E)dit again, (O)verwrite anyway, (A)bort: [E/o/a]? `; ghi lại file qua `doas dd`
-với tối đa 3 lần thử (tương ứng `3 incorrect password attempts`); khi
-`process_file` lỗi thì thư mục tạm được giữ lại, còn khi thành công thì xoá — đúng
-như `process::exit(1)` và đường thoát bình thường của Rust.
+`VISUAL` → `EDITOR` → `vi`; prompt xác nhận
+`(E)dit again, (O)verwrite anyway, (A)bort: [E/o/a]? `; thao tác ghi được thử tối
+đa 3 lần (tương ứng `3 incorrect password attempts`); khi `process_file` lỗi thì
+thư mục tạm được giữ lại, còn khi thành công thì xoá — đúng như
+`process::exit(1)` và đường thoát bình thường của Rust.
 
 ---
 
@@ -449,25 +458,25 @@ graph TD
     sys_core["sys_core: bọc libc"]
     doas_core["doas_core: parser + match + env + exec + auth"]
     doasedit_app["doasedit_app: cli + path + policy"]
-    doasedit_bridge["doasedit_bridge: cầu nối in-process"]
+    doasedit_elevated["doasedit_elevated: authorize + stat/read/write"]
     sudo_app["sudo_app: bảng dịch cờ"]
     sudo_main["sudo_main: trace + handoff"]
     common["doas-common: binary 4755"]
     sys_core --> doas_core
     sys_core --> doasedit_app
     sys_core --> sudo_app
-    doas_core --> doasedit_bridge
-    doasedit_app --> doasedit_bridge
+    doas_core --> doasedit_elevated
+    doasedit_app --> doasedit_elevated
     doas_core --> sudo_main
     sudo_app --> sudo_main
     doas_core --> common
-    doasedit_bridge --> common
+    doasedit_elevated --> common
     doasedit_app --> common
     sudo_main --> common
 ```
 
-`doasedit_bridge` tách riêng để test có thể link bản thay thế
-(`tests/fake_bridge.cpp`) và kiểm tra `doasedit` mà không cần quyền root.
+`doasedit_elevated` tách riêng để test có thể link bản thay thế
+(`tests/fake_elevated.cpp`) và kiểm tra `doasedit` mà không cần quyền root.
 
 ### 8.2 Preset và tuỳ chọn
 
@@ -516,12 +525,12 @@ Provider `SHADOW` không cài file này.
 
 Bốn tầng, mỗi tầng pin một loại hành vi:
 
-| Tầng          | Nội dung                                                                                                                                                   | Pin điều gì                                                                                                                                                           |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Golden corpus | 26 cấu hình và 4 bộ argv trong `tests/fixtures/configs` và `cases`; 99 file trong `tests/fixtures/golden` ghi stdout/stderr/exit code của **binary C gốc** | hành vi quan sát được của parser, matcher và applet doas, byte-exact; sinh lại bằng `tests/tools/regen_golden.sh <đường dẫn doas tham chiếu>`                         |
-| Unit          | `t_match`, `t_env`, `t_exec`, `t_numbers`, `t_strings`, `t_utf8`, `t_error`                                                                                | từng hàm thuần: chọn rule, dựng envp, `execvpe` và fallback `/bin/sh`, `strtonum`, `strlcpy`/`strlcat`, UTF-8, cách render lỗi                                        |
-| Applet        | `t_sudo_table`, `t_sudo_main`, `t_doasedit_cli`, `t_doasedit_policy`, `t_identity`, `t_golden`, `t_dispatch`                                               | bảng dịch cờ sudo, trace và handoff, CLI tương thích clap, bảng thông điệp doasedit (qua bridge thay thế), matrix uid/gid/GID_MAX, symlink và tên applet không hợp lệ |
-| Động          | preset `dev` với ASan + UBSan trên toàn bộ 15 test; ma trận build `DOAS_AUTH_PROVIDER={PAM,SHADOW}` × `DOAS_PERSIST={OFF,ON}`                              | lỗi bộ nhớ, hành vi khác nhau giữa các cấu hình build, các nhánh chỉ tồn tại ở một provider (`pam.cpp` hoặc `shadow.cpp`) và nhánh `timestamp`                        |
+| Tầng          | Nội dung                                                                                                                                                   | Pin điều gì                                                                                                                                                                                                      |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Golden corpus | 26 cấu hình và 4 bộ argv trong `tests/fixtures/configs` và `cases`; 99 file trong `tests/fixtures/golden` ghi stdout/stderr/exit code của **binary C gốc** | hành vi quan sát được của parser, matcher và applet doas, byte-exact; sinh lại bằng `tests/tools/regen_golden.sh <đường dẫn doas tham chiếu>`                                                                    |
+| Unit          | `t_match`, `t_env`, `t_exec`, `t_numbers`, `t_strings`, `t_utf8`, `t_error`                                                                                | từng hàm thuần: chọn rule, dựng envp, `execvpe` và fallback `/bin/sh`, `strtonum`, `strlcpy`/`strlcat`, UTF-8, cách render lỗi                                                                                   |
+| Applet        | `t_sudo_table`, `t_sudo_main`, `t_doasedit_cli`, `t_doasedit_policy`, `t_elevated`, `t_identity`, `t_golden`, `t_dispatch`                                 | bảng dịch cờ sudo, trace và handoff, CLI tương thích clap, bảng thông điệp doasedit (qua elevated thay thế), thao tác elevated + validate in-process, matrix uid/gid/GID_MAX, symlink và tên applet không hợp lệ |
+| Động          | preset `dev` với ASan + UBSan trên toàn bộ 16 test; ma trận build `DOAS_AUTH_PROVIDER={PAM,SHADOW}` × `DOAS_PERSIST={OFF,ON}`                              | lỗi bộ nhớ, hành vi khác nhau giữa các cấu hình build, các nhánh chỉ tồn tại ở một provider (`pam.cpp` hoặc `shadow.cpp`) và nhánh `timestamp`                                                                   |
 
 Thêm hai công cụ so sánh trực tiếp với bản C, chạy trên binary tham chiếu dựng từ
 commit trước khi port:
@@ -552,7 +561,7 @@ tắt có ghi lý do cho những check xung đột với ABI C được giữ ng
 | `libopenbsd/execvpe.c`                                                                                                                                                                                     | `doas/exec.cpp`                                                                                                                                                           | trả `sys::Error` thay vì đặt `errno`                                           |
 | `libopenbsd/readpassphrase.c`, `closefrom.c`, `progname.c`, `strlcpy.c`/`strlcat.c`, `strtonum.c`, `bsd-setres_id.c`, `errc.c`/`verrc.c`, `explicit_bzero.c`, `reallocarray.c`, `sys-time.h`, `sys-tree.h` | `sys/terminal.cpp`, `sys/process.cpp`, `sys/error.cpp` (`set_progname`, `die`, `warn`), `sys/strings.cpp`, `sys/numbers.cpp`, `sys/secret.cpp`, `sys/time.hpp`, `env.cpp` | xem bảng ở mục 3                                                               |
 | `configure` + `GNUmakefile`                                                                                                                                                                                | `CMakeLists.txt`, `CMakePresets.json`, các `CMakeLists.txt` con                                                                                                           | tuỳ chọn CMake thay cờ `configure`                                             |
-| `doasedit` `main.rs`, `error.rs`, `file_handler.rs`, `editor.rs`, `utils.rs`                                                                                                                               | `doasedit/cli.cpp`, `doasedit.cpp`, `path.cpp`, `bridge.cpp`                                                                                                              | `prose()` hợp nhất bảng thông điệp của `error.rs`                              |
-| `fudo.c` | `sudo/sudo.cpp`, `sudo/main.cpp` | tách bảng dịch thuần khỏi phần hiệu ứng phụ |
-| `pam.d__doas__linux` (upstream tới `v6.8.2`) | `pam.d__doas__linux`, cài thành `${DOAS_PAM_DIR}/doas` | giữ nguyên nội dung; file Darwin của upstream không dùng |
+| `doasedit` `main.rs`, `error.rs`, `file_handler.rs`, `editor.rs`, `utils.rs`                                                                                                                               | `doasedit/cli.cpp`, `doasedit.cpp`, `path.cpp`, `elevated.cpp`                                                                                                            | `prose()` hợp nhất bảng thông điệp của `error.rs`                              |
+| `fudo.c`                                                                                                                                                                                                   | `sudo/sudo.cpp`, `sudo/main.cpp`                                                                                                                                          | tách bảng dịch thuần khỏi phần hiệu ứng phụ                                    |
+| `pam.d__doas__linux` (upstream tới `v6.8.2`)                                                                                                                                                               | `pam.d__doas__linux`, cài thành `${DOAS_PAM_DIR}/doas`                                                                                                                    | giữ nguyên nội dung; file Darwin của upstream không dùng                       |
 | `fudo.1`, `doas.1`, `doas.conf.5`, `doasedit.1`                                                                                                                                                            | `man/`                                                                                                                                                                    | cùng nội dung, thêm `sudo.1`                                                   |

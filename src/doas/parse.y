@@ -226,7 +226,7 @@ const Keyword kKeywords[] = {
 // yyerror() of the original: "doas: <msg> at line <n>" with n = yylval.lineno + 1.
 // The "doas: " prefix is a literal in the original, not the program name.
 void config_error(std::string_view msg) {
-    sys::err_out(std::format("doas: {} at line {}\n", msg, g_lex.lineno + 1));
+    doas::report_config_error(std::format("doas: {} at line {}\n", msg, g_lex.lineno + 1));
     doas::g_parse_errors++;
 }
 

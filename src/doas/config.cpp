@@ -119,6 +119,62 @@ permit(const MatchContext& ctx, std::string_view cmd, std::span<const std::strin
     return result;
 }
 
+namespace {
+
+// Storage for report_config_error(); empty when no collector is active.
+std::optional<std::string> g_collected_diagnostics;
+
+// Owns the diagnostics collector for as long as it lives, so that
+// validate_config() cannot leave it armed on any return path. Constructing it also
+// resets the rule set and the error counter, which makes repeated validations
+// independent.
+class CollectGuard {
+  public:
+    CollectGuard() {
+        g_rules.clear();
+        g_parse_errors = 0;
+        g_collected_diagnostics.emplace();
+    }
+    ~CollectGuard() {
+        g_collected_diagnostics.reset();
+    }
+    CollectGuard(const CollectGuard&) = delete;
+    CollectGuard(CollectGuard&&) = delete;
+    CollectGuard& operator=(const CollectGuard&) = delete;
+    CollectGuard& operator=(CollectGuard&&) = delete;
+};
+
+// The diagnostics collected so far; empty when no guard is active.
+[[nodiscard]] std::string collected_diagnostics() {
+    return g_collected_diagnostics.value_or(std::string{});
+}
+
+} // namespace
+
+std::string_view config_path() {
+    return DOAS_CONF;
+}
+
+void report_config_error(std::string_view text) {
+    if (g_collected_diagnostics) {
+        *g_collected_diagnostics += text;
+        return;
+    }
+    sys::err_out(text);
+}
+
+sys::Result<std::string> validate_config(std::string_view filename) {
+    std::optional<sys::FileHandle> file = sys::FileHandle::open_read(filename);
+    if (!file) {
+        return std::unexpected(sys::fail_errno(errno));
+    }
+
+    const CollectGuard guard;
+    run_parser(file->raw());
+    file.reset();
+    return collected_diagnostics();
+}
+
 void parse_config(std::string_view filename, bool checkperms) {
     std::optional<sys::FileHandle> file = sys::FileHandle::open_read(filename);
     if (!file) {

@@ -1,6 +1,8 @@
 #ifndef DOAS_DOAS_CONFIG_HPP
 #define DOAS_DOAS_CONFIG_HPP
 
+#include "sys/error.hpp"
+
 #include <cstdio>
 #include <optional>
 #include <span>
@@ -63,6 +65,20 @@ std::optional<gid_t> parse_gid(std::string_view text);
 
 // Port of parseconfig(); exits on error exactly like the original.
 void parse_config(std::string_view filename, bool checkperms);
+
+// Parser diagnostics sink: while a collector is active (only inside validate_config()) the text is
+// appended to it, otherwise it goes to stderr, which is what the applet wants. Declared as a
+// function so that no pointer to the storage ever crosses a translation unit boundary.
+void report_config_error(std::string_view text);
+
+// parse_config() without the fatal paths: parses `filename` with checkperms = false (the same thing
+// `doas -C <file>` did) and returns the diagnostics the parser collected, empty when the file is
+// valid. Only an unreadable file is an error.
+[[nodiscard]] sys::Result<std::string> validate_config(std::string_view filename);
+
+// The compiled-in path of doas.conf (DOAS_CONF), for callers that need to pass it explicitly. Keeps
+// the macro inside doas_core.
+[[nodiscard]] std::string_view config_path();
 
 // Entry point implemented by parse.y: runs the grammar over fp.
 int run_parser(std::FILE* fp);

@@ -20,19 +20,16 @@
 // the same diagnostics and the same exit codes.
 #include "doas/doas.hpp"
 
-#include "doas/auth.hpp"
+#include "doas/authorize.hpp"
 #include "doas/config.hpp"
 #include "doas/env.hpp"
 #include "doas/exec.hpp"
 #include "doas/timestamp.hpp"
 #include "sys/error.hpp"
-#include "sys/fs.hpp"
 #include "sys/io.hpp"
 #include "sys/process.hpp"
-#include "sys/strings.hpp"
 #include "sys/users.hpp"
 
-#include <cerrno>
 #include <climits> // IWYU pragma: keep
 #include <cstdio>
 #include <cstdlib>
@@ -194,43 +191,10 @@ void replace_main(int argc, char* const argv[]) {
         std::exit(1); // fail safe
     }
 
-    if (sys::process::euid() != 0) {
-        sys::die(1, "not installed setuid");
-    }
-
-    parse_config(DOAS_CONF, true);
-
-    // cmdline is used only for logging, no need to abort on truncate
-    sys::BoundedString cmdline(LINE_MAX);
-    cmdline.assign(cmd_argv[0]);
-    for (int i = 1; i < cmd_argc; i++) {
-        if (!cmdline.append(" ")) {
-            break;
-        }
-        if (!cmdline.append(cmd_argv[i])) {
-            break;
-        }
-    }
-
     const char* cmd = cmd_argv[0];
-    const MatchContext ctx{uid, groups, target};
     const std::vector<std::string> cmd_args = collect_args(cmd_argc, cmd_argv, 1);
-    const PermitResult result = permit(ctx, cmd, cmd_args);
-    if (!result.allowed || !result.rule) {
-        sys::log(LOG_AUTHPRIV | LOG_NOTICE,
-                 std::format("command not permitted for {}: {}", self_pw->name, cmdline.view()));
-        sys::die(1, sys::fail_errno(EPERM));
-    }
-    const Rule& rule = *result.rule;
 
-#if defined(DOAS_HAVE_SHADOW)
-    if ((rule.options & kNopass) == 0) {
-        if (nflag) {
-            sys::die(1, "Authentication required");
-        }
-        shadow_auth(self_pw->name, (rule.options & kPersist) != 0);
-    }
-#endif
+    const Rule rule = authorize_command(cmd, cmd_args, target, AuthMode::kAuthenticate, !nflag);
 
     const std::string formerpath = sys::process::get_env("PATH").value_or("");
 
@@ -248,14 +212,6 @@ void replace_main(int argc, char* const argv[]) {
         sys::die(1, target_pw.error(), "getpwuid_r failed");
     }
 
-#if defined(DOAS_HAVE_PAM)
-    pamauth(target_pw->name,
-            self_pw->name,
-            !nflag,
-            (rule.options & kNopass) != 0,
-            (rule.options & kPersist) != 0);
-#endif
-
     if (sys::Status gid = sys::process::set_res_gid(target_pw->gid, target_pw->gid, target_pw->gid);
         !gid) {
         sys::die(1, gid.error(), "setresgid");
@@ -268,18 +224,6 @@ void replace_main(int argc, char* const argv[]) {
     }
     if (sys::Status set = sys::process::set_env("PATH", kSafePath); !set) {
         sys::die(1, set.error(), std::format("failed to set PATH '{}'", kSafePath));
-    }
-
-    const std::optional<std::string> cwd = sys::fs::current_dir();
-    const std::string cwd_text = cwd.value_or("(failed)");
-
-    if ((rule.options & kNolog) == 0) {
-        sys::log(LOG_AUTHPRIV | LOG_INFO,
-                 std::format("{} ran command {} as {} from {}",
-                             self_pw->name,
-                             cmdline.view(),
-                             target_pw->name,
-                             cwd_text));
     }
 
     std::vector<std::string> env_entries = prepenv(rule, *self_pw, *target_pw, formerpath);

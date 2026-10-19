@@ -96,9 +96,11 @@ DOAS_EDITOR=nano doasedit /etc/doas.conf
 ```
 
 Editor lấy theo thứ tự `DOAS_EDITOR` → `VISUAL` → `EDITOR` → `vi`. File thuộc
-user, file nằm trong thư mục thuộc user, và thư mục user ghi được đều bị từ chối;
-sửa `doas.conf` sẽ được kiểm tra bằng `doas -C` trước khi ghi lại. Xem
-`man 1 doasedit`.
+user, file nằm trong thư mục thuộc user, và thư mục user ghi được đều bị từ chối.
+Mật khẩu được hỏi **một lần, trước khi editor mở** (nếu rule không `nopass`), rồi
+lưu không hỏi lại; các bước đọc/ghi file chạy trực tiếp trong tiến trình con đã
+nâng euid, không gọi `cat`/`dd`/`test`/`stat` bên ngoài, và `doas.conf` được kiểm
+tra cú pháp bằng chính parser trong binary trước khi ghi lại. Xem `man 1 doasedit`.
 
 ### sudo
 

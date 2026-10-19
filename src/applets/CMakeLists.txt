@@ -1,6 +1,6 @@
 # The multicall binary: argv[0] decides which applet runs.
 add_executable(doas-common main.cpp)
-target_link_libraries(doas-common PRIVATE sys_core doas_core doasedit_app doasedit_bridge sudo_main)
+target_link_libraries(doas-common PRIVATE sys_core doas_core doasedit_app doasedit_elevated sudo_main)
 doas_target_defaults(doas-common)
 
 # Applet symlinks used by the dispatcher; they live next to the binary so that the
