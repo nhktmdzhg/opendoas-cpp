@@ -6,6 +6,8 @@
 .Nd execute commands as another user
 .Sh SYNOPSIS
 .Nm doas
+.Op Fl h | Fl -help
+.Op Fl v | Fl -version
 .Op Fl Lns
 .Op Fl C Ar config
 .Op Fl u Ar user
@@ -86,6 +88,10 @@ or
 Execute the command as
 .Ar user .
 The default is root.
+.It Fl h , Fl -help
+Print a short usage summary and exit.
+.It Fl v , Fl -version
+Print the version and exit.
 .El
 .Sh EXIT STATUS
 .Ex -std doas

@@ -37,36 +37,40 @@ std::string join(const std::vector<std::string>& values) {
 int main() {
     using Status = doasedit::cli::ParseResult::Status;
 
-    // Help and version text, exactly as captured from doasedit 1.1.0.
+    // Help text, pinned byte for byte; the version line comes from meta::applet_version.
     CHECK_EQ(std::string(doasedit::cli::kHelpText),
-             std::string("A Rust implementation of doasedit - edit files as root using an "
-                         "unprivileged editor\n"
+             std::string("doasedit (opendoas-cpp) - edit files as root with an unprivileged "
+                         "editor\n"
                          "\n"
-                         "Usage: doasedit <files>...\n"
+                         "Usage: doasedit [-h|--help] [-v|--version] <files>...\n"
                          "\n"
                          "Arguments:\n"
                          "  <files>...  Files to edit\n"
                          "\n"
                          "Options:\n"
                          "  -h, --help     Print help\n"
-                         "  -V, --version  Print version\n"));
-    CHECK_EQ(std::string(doasedit::cli::kVersionText), std::string("doasedit 1.1.0\n"));
+                         "  -v, --version  Print version\n"));
 
     {
         const auto result = parse({"doasedit", "--help"});
         CHECK(result.status == Status::kHelp);
     }
     {
-        const auto result = parse({"doasedit", "-V"});
+        const auto result = parse({"doasedit", "-v"});
         CHECK(result.status == Status::kVersion);
+    }
+    // -V is no longer the version flag: it is an unknown argument now.
+    {
+        const auto result = parse({"doasedit", "-V"});
+        CHECK(result.status == Status::kError);
     }
     // The flag that appears first wins.
     {
-        const auto result = parse({"doasedit", "-V", "-h"});
+        const auto result = parse({"doasedit", "-v", "-h"});
         CHECK(result.status == Status::kVersion);
     }
     {
-        const auto result = parse({"doasedit", "-h", "-V"});
+        const auto result = parse({"doasedit", "-h", "-v"});
         CHECK(result.status == Status::kHelp);
     }
     // Flags are recognised after positional arguments too.
@@ -83,7 +87,7 @@ int main() {
                  std::string("error: the following required arguments were not provided:\n"
                              "  <files>...\n"
                              "\n"
-                             "Usage: doasedit <files>...\n"
+                             "Usage: doasedit [-h|--help] [-v|--version] <files>...\n"
                              "\n"
                              "For more information, try '--help'.\n"));
     }
@@ -97,7 +101,7 @@ int main() {
                              "\n"
                              "  tip: to pass '--bogus' as a value, use '-- --bogus'\n"
                              "\n"
-                             "Usage: doasedit <files>...\n"
+                             "Usage: doasedit [-h|--help] [-v|--version] <files>...\n"
                              "\n"
                              "For more information, try '--help'.\n"));
     }

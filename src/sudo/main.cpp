@@ -4,6 +4,7 @@
 #include "sys/io.hpp"
 #include "sys/process.hpp"
 #include "sys/users.hpp"
+#include "version.hpp"
 
 #include <optional>
 #include <string>
@@ -12,7 +13,39 @@
 
 namespace sudo {
 
+namespace {
+
+constexpr std::string_view kHelpText =
+    "sudo (opendoas-cpp) - translate a sudo command line into doas arguments\n"
+    "\n"
+    "Usage: sudo [-h|--help] [-v|--version] [sudo options] [command [args]...]\n"
+    "\n"
+    "Options:\n"
+    "  -h, --help     Print help\n"
+    "  -v, --version  Print version\n"
+    "\n"
+    "Every other sudo option is translated to its doas equivalent or ignored; what may\n"
+    "run is decided by doas.conf(5).\n";
+
+} // namespace
+
 int main(int argc, char* const argv[]) {
+    // Help, version and sudo -e are answered before anything else: they must not
+    // need a doas binary and must not print a trace.
+    const TranslateResult translated = translate(argc, argv);
+    switch (translated.request) {
+    case Request::kHelp:
+        sys::out(kHelpText);
+        return 0;
+    case Request::kVersion:
+        sys::out(meta::applet_version("sudo"));
+        return 0;
+    case Request::kExit:
+        return 0;
+    case Request::kNone:
+        break;
+    }
+
     // Kept for parity with the original (which reports a missing doas binary and
     // exits with 255); the resolved path is only used for the trace output.
     const std::optional<std::string> doas_prog = sys::process::which("doas");
@@ -38,11 +71,6 @@ int main(int argc, char* const argv[]) {
 
     std::vector<std::string> args;
     args.push_back(*doas_prog);
-
-    const TranslateResult translated = translate(argc, argv);
-    if (translated.exit_now) {
-        return 0;
-    }
     for (const std::string& arg : translated.args) {
         args.push_back(arg);
     }

@@ -12,6 +12,8 @@ enum class Attr {
     kPass,
     kIgnore,
     kExit,
+    kHelp,
+    kVersion,
 };
 
 struct Equiv {
@@ -24,8 +26,17 @@ struct Equiv {
 // The sudo -> doas flag translation table.
 extern const Equiv kEquiv[];
 
+// What main() has to do instead of running doas: print the applet help, the
+// version line, or exit silently (sudo -e has no doas equivalent).
+enum class Request {
+    kNone,
+    kExit,
+    kHelp,
+    kVersion,
+};
+
 struct TranslateResult {
-    bool exit_now = false;
+    Request request = Request::kNone;
     std::vector<std::string> args;
 };
 

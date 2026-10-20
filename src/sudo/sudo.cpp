@@ -27,8 +27,8 @@ const Equiv kEquiv[] = {
     {"--group=", nullptr, Attr::kIgnore, 0},
     {"-H", nullptr, Attr::kIgnore, 0},
     {"--set-home", nullptr, Attr::kIgnore, 0},
-    {"--help", nullptr, Attr::kIgnore, 0},
-    {"-h", nullptr, Attr::kIgnore, 1},
+    {"--help", nullptr, Attr::kHelp, 0},
+    {"-h", nullptr, Attr::kHelp, 0},
     {"--host=", nullptr, Attr::kIgnore, 0},
     {"-i", "-s", Attr::kPass, 0}, // Execute user's shell
     {"-K", nullptr, Attr::kIgnore, 0},
@@ -58,8 +58,8 @@ const Equiv kEquiv[] = {
     {"-u", "-u", Attr::kPass, 1},      // Run as user
     {"--user=", "-u", Attr::kPass, 0}, // Run as user
     {"-V", nullptr, Attr::kIgnore, 0},
-    {"--version", nullptr, Attr::kIgnore, 0},
-    {"-v", nullptr, Attr::kIgnore, 0},
+    {"--version", nullptr, Attr::kVersion, 0},
+    {"-v", nullptr, Attr::kVersion, 0},
     {"--validate", nullptr, Attr::kIgnore, 0},
     {"", nullptr, Attr::kUnknown, 0},
 };
@@ -138,7 +138,13 @@ TranslateResult translate(int argc, const char* const argv[]) {
         case Attr::kIgnore:
             break;
         case Attr::kExit:
-            result.exit_now = true;
+            result.request = Request::kExit;
+            return result;
+        case Attr::kHelp:
+            result.request = Request::kHelp;
+            return result;
+        case Attr::kVersion:
+            result.request = Request::kVersion;
             return result;
         case Attr::kUnknown:
             break;

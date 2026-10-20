@@ -1,0 +1,50 @@
+.Dd October 20, 2026
+.Dt DOAS-COMMON 1
+.Os
+.Sh NAME
+.Nm doas-common
+.Nd multicall binary for doas, doasedit and sudo
+.Sh SYNOPSIS
+.Nm
+.Op Fl h | Fl -help
+.Op Fl v | Fl -version
+.Op Fl l | Fl -list
+.Sh DESCRIPTION
+The
+.Nm
+binary contains three applets.
+The applet is selected by the last component of the invoked path
+.Pq Dv argv\[u005B]0\[u005D] :
+.Bl -tag -width doasedit
+.It Sy doas
+Execute a command as another user; see
+.Xr doas 1 .
+.It Sy doasedit
+Edit files as root using an unprivileged editor; see
+.Xr doasedit 1 .
+.It Sy sudo
+Translate a sudo command line into doas arguments and run it; see
+.Xr sudo 1 .
+.El
+.Pp
+Invoked as
+.Nm
+itself, or under any other name, no applet runs and only the options below are
+accepted.
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl h , Fl -help
+Print a short usage summary and exit.
+.It Fl v , Fl -version
+Print the version and exit.
+.It Fl l , Fl -list
+Print the applets and what they do, one tab separated name and description per
+line, and exit.
+.El
+.Sh EXIT STATUS
+.Ex -std doas-common
+.Sh SEE ALSO
+.Xr doas 1 ,
+.Xr doasedit 1 ,
+.Xr sudo 1 ,
+.Xr doas.conf 5

@@ -5,17 +5,22 @@
 #include "sys/error.hpp"
 #include "sys/io.hpp"
 #include "sys/process.hpp"
+#include "version.hpp"
 
 #include <cstdlib>
+#include <format>
 #include <string_view>
 #include <system_error>
 
 namespace applets {
 
-Applet detect(std::string_view argv0) {
+std::string_view basename(std::string_view argv0) {
     const size_t slash = argv0.rfind('/');
-    const std::string_view base =
-        (slash == std::string_view::npos) ? argv0 : argv0.substr(slash + 1);
+    return (slash == std::string_view::npos) ? argv0 : argv0.substr(slash + 1);
+}
+
+Applet detect(std::string_view argv0) {
+    const std::string_view base = basename(argv0);
     if (base == "doas") {
         return Applet::kDoas;
     }
@@ -31,6 +36,46 @@ Applet detect(std::string_view argv0) {
 } // namespace applets
 
 namespace {
+
+constexpr std::string_view kAppletList =
+    "doas\texecute a command as another user\n"
+    "doasedit\tedit files as root using an unprivileged editor\n"
+    "sudo\ttranslate a sudo command line and run it through doas\n";
+
+constexpr std::string_view kCommonHelp =
+    "opendoas-cpp dev\n"
+    "\n"
+    "Usage: doas-common [-h|--help] [-v|--version] [-l|--list]\n"
+    "\n"
+    "This binary is a multicall binary; invoke it through one of its applet symlinks:\n"
+    "  doas      execute a command as another user\n"
+    "  doasedit  edit files as root using an unprivileged editor\n"
+    "  sudo      translate a sudo command line and run it through doas\n";
+
+constexpr std::string_view kCommonUsage =
+    "usage: doas-common [-h|--help] [-v|--version] [-l|--list]\n";
+
+// doas-common invoked as itself: only the informational flags are accepted.
+int common_main(int argc, char** argv) {
+    for (int i = 1; i < argc; i++) {
+        const std::string_view arg = argv[i] != nullptr ? argv[i] : "";
+        if (arg == "-h" || arg == "--help") {
+            sys::out(kCommonHelp);
+            return 0;
+        }
+        if (arg == "-v" || arg == "--version") {
+            sys::out(std::format("{} {}\n", meta::kProjectName, meta::kVersion));
+            return 0;
+        }
+        if (arg == "-l" || arg == "--list") {
+            sys::out(kAppletList);
+            return 0;
+        }
+        break;
+    }
+    sys::err_out(kCommonUsage);
+    return 1;
+}
 
 // The doas applet needs the effective root privileges granted by the setuid
 // installation; every other applet drops them immediately (keeping the saved set
@@ -67,6 +112,9 @@ int main(int argc, char** argv) {
         drop_effective_privileges();
         return sudo::main(argc, argv);
     case applets::Applet::kUnknown:
+        if (applets::basename(argv0) == "doas-common") {
+            return common_main(argc, argv);
+        }
         break;
     }
 

@@ -12,11 +12,13 @@
 #include "sys/io.hpp"
 #include "sys/process.hpp"
 #include "sys/users.hpp"
+#include "version.hpp"
 
 #include <climits> // IWYU pragma: keep
 #include <cstdio>
 #include <cstdlib>
 #include <format>
+#include <getopt.h>
 #include <optional>
 #include <span>
 #include <string>
@@ -83,8 +85,27 @@ std::vector<std::string> collect_args(int argc, char* const argv[], int first) {
 } // namespace
 
 void usage() {
-    sys::err_out("usage: doas [-Lns] [-C config] [-u user] command [args]\n");
+    sys::err_out("usage: doas [-Lhnsv] [-C config] [-u user] command [args]\n");
     std::exit(1);
+}
+
+void help() {
+    sys::out("doas (opendoas-cpp) - execute commands as another user\n"
+             "\n"
+             "Usage: doas [-Lhnsv] [-C config] [-u user] command [args]\n"
+             "\n"
+             "Arguments:\n"
+             "  command [args]  Command to run as another user\n"
+             "\n"
+             "Options:\n"
+             "  -C config       Read rules from config instead of /etc/doas.conf\n"
+             "  -L              Clear the persist timestamp\n"
+             "  -n              Non-interactive: fail instead of asking for a password\n"
+             "  -s              Run the shell from $SHELL or passwd(5)\n"
+             "  -u user         Run the command as user\n"
+             "  -h, --help      Print help\n"
+             "  -v, --version   Print version\n");
+    std::exit(0);
 }
 
 void replace_main(int argc, char* const argv[]) {
@@ -99,12 +120,23 @@ void replace_main(int argc, char* const argv[]) {
     bool sflag = false;
     bool nflag = false;
 
+    static const struct option long_options[] = {
+        {"help", no_argument, nullptr, 'h'},
+        {"version", no_argument, nullptr, 'v'},
+        {nullptr, 0, nullptr, 0},
+    };
+
     int ch = 0;
-    while ((ch = getopt(argc, argv, "+C:Lnsu:")) != -1) {
+    while ((ch = getopt_long(argc, argv, "+C:Lhnsu:v", long_options, nullptr)) != -1) {
         switch (ch) {
         case 'C':
             confpath = optarg;
             break;
+        case 'h':
+            help();
+        case 'v':
+            sys::out(meta::applet_version("doas"));
+            std::exit(0);
         case 'L':
 #if defined(DOAS_PERSIST)
             // timestamp_clear() returned 0/-1; a failure is exit status 1.

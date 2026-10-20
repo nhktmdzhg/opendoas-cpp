@@ -10,7 +10,8 @@ namespace {
 
 // The tail shared by both clap errors.
 std::string usage_footer() {
-    return "Usage: doasedit <files>...\n\nFor more information, try '--help'.\n";
+    return "Usage: doasedit [-h|--help] [-v|--version] <files>...\n\nFor more information, try "
+           "'--help'.\n";
 }
 
 } // namespace
@@ -30,7 +31,7 @@ ParseResult parse(int argc, const char* const argv[]) {
                 result.status = ParseResult::Status::kHelp;
                 return result;
             }
-            if (arg == "-V" || arg == "--version") {
+            if (arg == "-v" || arg == "--version") {
                 result.status = ParseResult::Status::kVersion;
                 return result;
             }

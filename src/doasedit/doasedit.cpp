@@ -14,6 +14,7 @@
 #include "sys/io.hpp"
 #include "sys/process.hpp"
 #include "sys/strings.hpp"
+#include "version.hpp"
 
 #include <array>
 #include <cerrno>
@@ -568,7 +569,7 @@ int main(int argc, char* const argv[]) {
         sys::out(cli::kHelpText);
         return 0;
     case cli::ParseResult::Status::kVersion:
-        sys::out(cli::kVersionText);
+        sys::out(meta::applet_version("doasedit"));
         return 0;
     case cli::ParseResult::Status::kError:
         sys::err_out(parsed.error_text);

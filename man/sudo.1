@@ -4,7 +4,7 @@
 sudo \- translate sudo commands to doas
 .SH "SYNOPSIS"
 .PP
-\fBsudo\fP [sudo flags] command [args]
+\fBsudo\fP [\fB\-h\fP|\fB\-\-help\fP] [\fB\-v\fP|\fB\-\-version\fP] [sudo flags] command [args]
 .SH "DESCRIPTION"
 .PP
 \fBsudo\fP translates a command line written for \fIsudo\fP into a \fIdoas\fP
@@ -54,8 +54,8 @@ _
 \-\-group=		IGNORE
 \-H		IGNORE
 \-\-set\-home		IGNORE
-\-\-help		IGNORE
-\-h		IGNORE
+\-\-help		HELP
+\-h		HELP
 \-\-host=		IGNORE
 \-i	\-s	PASS
 \-K		IGNORE
@@ -85,8 +85,8 @@ _
 \-u	\-u	PASS
 \-\-user=	\-u	PASS
 \-V		IGNORE
-\-\-version		IGNORE
-\-v		IGNORE
+\-\-version		VERSION
+\-v		VERSION
 \-\-validate		IGNORE
 .TE
 .SH "ENVIRONMENT"

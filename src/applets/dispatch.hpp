@@ -12,7 +12,11 @@ enum class Applet {
     kUnknown,
 };
 
-// Which applet to run, decided by the basename of argv[0] (busybox style).
+// Last component of argv[0]: the caller controls it, which is what selects the
+// applet (busybox style).
+[[nodiscard]] std::string_view basename(std::string_view argv0);
+
+// Which applet to run, decided by the basename of argv[0].
 Applet detect(std::string_view argv0);
 
 } // namespace applets

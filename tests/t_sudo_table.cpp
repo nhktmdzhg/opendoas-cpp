@@ -31,7 +31,7 @@ std::vector<std::string> translate_line(std::initializer_list<const char*> argv)
     return sudo::translate(static_cast<int>(raw.size()), raw.data()).args;
 }
 
-bool exits(std::initializer_list<const char*> argv) {
+sudo::Request request(std::initializer_list<const char*> argv) {
     std::vector<std::string> owned;
     for (const char* arg : argv) {
         owned.emplace_back(arg);
@@ -41,7 +41,7 @@ bool exits(std::initializer_list<const char*> argv) {
     for (const std::string& arg : owned) {
         raw.push_back(arg.c_str());
     }
-    return sudo::translate(static_cast<int>(raw.size()), raw.data()).exit_now;
+    return sudo::translate(static_cast<int>(raw.size()), raw.data()).request;
 }
 
 } // namespace
@@ -61,14 +61,14 @@ int main() {
     CHECK_EQ(join(translate_line({"sudo", "-E", "x"})), std::string("x"));
     CHECK_EQ(join(translate_line({"sudo", "--preserve-env", "x"})), std::string("x"));
     CHECK_EQ(join(translate_line({"sudo", "--preserve-env=PATH", "x"})), std::string("x"));
-    CHECK(exits({"sudo", "-e"}));
-    CHECK(exits({"sudo", "--edit"}));
+    CHECK(request({"sudo", "-e"}) == sudo::Request::kExit);
+    CHECK(request({"sudo", "--edit"}) == sudo::Request::kExit);
     CHECK_EQ(join(translate_line({"sudo", "-g", "wheel", "x"})), std::string("wheel x"));
     CHECK_EQ(join(translate_line({"sudo", "--group=wheel", "x"})), std::string("x"));
     CHECK_EQ(join(translate_line({"sudo", "-H", "x"})), std::string("x"));
     CHECK_EQ(join(translate_line({"sudo", "--set-home", "x"})), std::string("x"));
-    CHECK_EQ(join(translate_line({"sudo", "--help", "x"})), std::string("x"));
-    CHECK_EQ(join(translate_line({"sudo", "-h", "host", "x"})), std::string("host x"));
+    CHECK(request({"sudo", "--help"}) == sudo::Request::kHelp);
+    CHECK(request({"sudo", "-h"}) == sudo::Request::kHelp);
     CHECK_EQ(join(translate_line({"sudo", "--host=host", "x"})), std::string("x"));
     CHECK_EQ(join(translate_line({"sudo", "-i"})), std::string("-s"));
     CHECK_EQ(join(translate_line({"sudo", "-K", "x"})), std::string("x"));
@@ -98,8 +98,9 @@ int main() {
     CHECK_EQ(join(translate_line({"sudo", "-u", "root", "id"})), std::string("-u root id"));
     CHECK_EQ(join(translate_line({"sudo", "--user=root", "id"})), std::string("-u root id"));
     CHECK_EQ(join(translate_line({"sudo", "-V", "x"})), std::string("x"));
-    CHECK_EQ(join(translate_line({"sudo", "--version", "x"})), std::string("x"));
-    CHECK_EQ(join(translate_line({"sudo", "-v", "x"})), std::string("x"));
+    CHECK(request({"sudo", "-V"}) == sudo::Request::kNone);
+    CHECK(request({"sudo", "--version"}) == sudo::Request::kVersion);
+    CHECK(request({"sudo", "-v"}) == sudo::Request::kVersion);
     CHECK_EQ(join(translate_line({"sudo", "--validate", "x"})), std::string("x"));
 
     // No arguments at all.
